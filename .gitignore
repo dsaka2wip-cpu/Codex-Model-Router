@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+logs/
+backups/
+smoke-*.jsonl
+smoke-*.log
+live-check*.json
+HANDOFF.md
+CONTINUE_PROMPT.md
+.env
+.env.*
+.venv/
