@@ -65,6 +65,11 @@ class RouterChecks(unittest.TestCase):
     def test_policy_and_malformed_stdin_fail_open(self):
         out, _ = router.route({"hook_event_name": "UserPromptSubmit", "prompt": "응 진행해"})
         self.assertIn("whole", out["hookSpecificOutput"]["additionalContext"])
+        _, meta = router.route({"hook_event_name": "UserPromptSubmit", "model": "gpt-5.6-sol",
+                                "session_id": "private-session", "prompt": "private-input"})
+        self.assertEqual(meta["model"], "gpt-5.6-sol")
+        self.assertEqual(len(meta["session_fingerprint"]), 16)
+        self.assertNotIn("private", json.dumps(meta))
         result = subprocess.run([sys.executable, str(router.ROOT / "router.py")], input=b"bad json",
                                 capture_output=True, timeout=5)
         self.assertEqual(result.returncode, 0)

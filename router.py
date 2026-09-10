@@ -56,8 +56,12 @@ def route(event):
             meta["parent_fingerprint"] = hashlib.sha256(event["session_id"].encode()).hexdigest()[:16]
         return {}, meta
     if kind == "UserPromptSubmit":
+        model = event.get("model")
+        meta = {"decision": "policy", "model": model if model in {p[0] for p in ROUTES.values()} else "unknown"}
+        if isinstance(event.get("session_id"), str):
+            meta["session_fingerprint"] = hashlib.sha256(event["session_id"].encode()).hexdigest()[:16]
         return {"hookSpecificOutput": {"hookEventName": kind,
-                                      "additionalContext": POLICY}}, {"decision": "policy"}
+                                      "additionalContext": POLICY}}, meta
     if kind != "PreToolUse" or event.get("tool_name") not in TOOLS:
         return {}, {"decision": "unrelated"}
     args = event.get("tool_input")

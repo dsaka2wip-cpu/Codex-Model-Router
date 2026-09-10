@@ -10,3 +10,8 @@ CONTINUE_PROMPT.md
 .env
 .env.*
 .venv/
+
+state/
+live-main-check*.json
+launch.log
+.serena/

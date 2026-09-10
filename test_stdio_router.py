@@ -1,0 +1,237 @@
+import copy
+import io
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+
+from adaptive_policy import AdaptivePolicy, DEFAULT
+from stdio_router import _json_transform, run_bridge
+
+
+class Policy:
+    def __init__(self):
+        self.client = []
+        self.server = []
+        self.audit_events = []
+
+    def on_client(self, message):
+        self.client.append(message)
+        if message.get("method") != "turn/start":
+            return message
+        changed = dict(message)
+        changed["params"] = dict(message["params"], model="routed-model", effort="high")
+        return changed
+
+    def on_server(self, message):
+        self.server.append(message)
+
+    def audit(self, event):
+        self.audit_events.append(event)
+
+
+class FooterPolicy(Policy):
+    def on_server(self, message):
+        if message.get("method") != "item/completed":
+            return None
+        changed = copy.deepcopy(message)
+        changed["params"]["item"]["text"] += "\nfooter"
+        return [{"method": "item/agentMessage/delta", "params": {"delta": "\nfooter"}}, changed]
+
+
+class StdioRouterTests(unittest.TestCase):
+    def bridge(self, payload, policy=None, *child_args, limit=16 * 1024 * 1024):
+        output, errors = io.BytesIO(), io.BytesIO()
+        code = run_bridge(
+            sys.executable,
+            [str(Path(__file__).resolve()), "--fake-child", *child_args, "app-server"],
+            policy=policy,
+            stdin=io.BytesIO(payload),
+            stdout=output,
+            stderr=errors,
+            max_line_bytes=limit,
+        )
+        return code, output.getvalue(), errors.getvalue()
+
+    def test_bidirectional_protocol_is_transparent_except_turn_start(self):
+        policy = Policy()
+        raw = (
+            b'{"id":"abc","method":"turn/start","params":{"input":"\xe2\x98\x83"}}\n'
+            b'{"id":7,"result":{"decision":"accept"}}\n'
+            b'{"method":"unknown/event","params":{"raw":true}}\n'
+            b'\xff malformed\n'
+        )
+        code, output, errors = self.bridge(raw, policy, "--emit-event")
+        lines = output.splitlines(keepends=True)
+        routed = json.loads(lines[0])
+        self.assertEqual((routed["id"], routed["params"]["model"], routed["params"]["effort"]),
+                         ("abc", "routed-model", "high"))
+        self.assertEqual(lines[1:4], raw.splitlines(keepends=True)[1:])
+        self.assertEqual(json.loads(lines[4])["method"], "item/agentMessage/delta")
+        self.assertEqual(policy.client[0]["id"], "abc")
+        self.assertEqual(policy.server[-1]["method"], "item/agentMessage/delta")
+        self.assertEqual(errors, b"child-stderr\x00\xff")
+        self.assertEqual(code, 0)
+
+    def test_non_utf8_json_is_preserved_byte_for_byte(self):
+        raw = '{"id":1,"method":"turn/start","params":{}}\n'.encode("utf-16-be")
+        policy = Policy()
+        code, output, _ = self.bridge(raw, policy)
+        self.assertEqual((code, output), (0, raw))
+        self.assertEqual(policy.client, [])
+
+    def test_server_transform_can_inject_footer_delta_before_completed_item(self):
+        transform = _json_transform(FooterPolicy(), "server")
+        raw = b'{"method":"item/completed","params":{"item":{"text":"answer"}}}\r\n'
+        rows = [json.loads(line) for line in transform(raw).splitlines()]
+        self.assertEqual(rows[0]["method"], "item/agentMessage/delta")
+        self.assertEqual(rows[1]["params"]["item"]["text"], "answer\nfooter")
+
+    def test_server_transform_can_hold_a_final_item(self):
+        class HoldPolicy(Policy):
+            def on_server(self, _message):
+                return []
+
+        raw = b'{"method":"item/completed","params":{}}\n'
+        self.assertEqual(_json_transform(HoldPolicy(), "server")(raw), b"")
+    def test_policy_failure_fails_open_without_content_logging(self):
+        class Broken(Policy):
+            def on_client(self, message):
+                raise ValueError(message["params"]["input"])
+
+        policy = Broken()
+        raw = b'{"id":1,"method":"turn/start","params":{"input":"secret"}}\n'
+        code, output, errors = self.bridge(raw, policy)
+        self.assertEqual((code, output, errors), (0, raw, b"child-stderr\x00\xff"))
+        self.assertEqual(policy.audit_events, ["policy_error"])
+
+    def test_oversized_line_bypasses_policy_and_is_not_truncated(self):
+        policy = Policy()
+        raw = b'{"method":"turn/start","params":{"input":"' + (b"x" * 200) + b'"}}\n'
+        code, output, _ = self.bridge(raw, policy, limit=32)
+        self.assertEqual((code, output), (0, raw))
+        self.assertEqual(policy.client, [])
+
+    def test_exit_code_and_non_app_server_passthrough(self):
+        output, errors = io.BytesIO(), io.BytesIO()
+        raw = b"--version bytes \xff\n"
+        code = run_bridge(
+            sys.executable,
+            [str(Path(__file__).resolve()), "--fake-child", "--exit", "23"],
+            stdin=io.BytesIO(raw), stdout=output, stderr=errors,
+        )
+        self.assertEqual((code, output.getvalue()), (23, raw))
+
+    def test_child_receives_real_cli_path(self):
+        output = io.BytesIO()
+        code = run_bridge(
+            sys.executable,
+            [str(Path(__file__).resolve()), "--fake-child", "--emit-cli-path"],
+            stdin=io.BytesIO(), stdout=output, stderr=io.BytesIO(),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(output.getvalue().decode(), str(Path(sys.executable).resolve()))
+
+    def test_gui_arguments_are_forwarded_in_order(self):
+        args = ["-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled"]
+        output = io.BytesIO()
+        code = run_bridge(
+            sys.executable,
+            [str(Path(__file__).resolve()), "--fake-child", "--emit-argv", *args],
+            policy=Policy(), stdin=io.BytesIO(), stdout=output, stderr=io.BytesIO(),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue()), ["--emit-argv", *args])
+
+    def test_adaptive_policy_becomes_ready_through_bridge_observation(self):
+        class ObservedPolicy(AdaptivePolicy):
+            def __init__(self, config, audit):
+                self.auth_ready = threading.Event()
+                self.catalog_ready = threading.Event()
+                super().__init__(config, audit)
+
+            def on_server(self, message):
+                super().on_server(message)
+                if self.auth:
+                    self.auth_ready.set()
+                if self.catalog:
+                    self.catalog_ready.set()
+
+        class SequencedInput:
+            def __init__(self, lines, gates):
+                self.lines, self.gates, self.index = lines, gates, 0
+
+            def readline(self, _limit):
+                if self.index and self.index < len(self.lines) and not self.gates[self.index - 1].wait(5):
+                    raise TimeoutError("policy observation did not complete")
+                if self.index >= len(self.lines):
+                    return b""
+                line = self.lines[self.index]
+                self.index += 1
+                return line
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.json"
+            config.write_text(json.dumps(DEFAULT), encoding="utf-8")
+            policy = ObservedPolicy(config, root / "audit")
+            requests = [
+                b'{"id":1,"method":"account/read","params":{}}\n',
+                b'{"id":"1","method":"model/list","params":{}}\n',
+                b'{"id":3,"method":"turn/start","params":{"threadId":"t","model":"gpt-6-astra","effort":"ultra","input":[{"type":"text","text":"What is JSON?"}]}}\n',
+            ]
+            output = io.BytesIO()
+            code = run_bridge(
+                sys.executable,
+                [str(Path(__file__).resolve()), "--fake-child", "--adaptive-sequence", "app-server"],
+                policy=policy,
+                stdin=SequencedInput(requests, [policy.auth_ready, policy.catalog_ready]),
+                stdout=output,
+                stderr=io.BytesIO(),
+            )
+        response = json.loads(output.getvalue().splitlines()[-1])
+        received = response["result"]["received"]
+        self.assertEqual(code, 0)
+        self.assertEqual((received["params"]["model"], received["params"]["effort"]),
+                         ("gpt-5.6-luna", "low"))
+
+
+def fake_child(argv):
+    exit_code = int(argv[argv.index("--exit") + 1]) if "--exit" in argv else 0
+    if "--adaptive-sequence" in argv:
+        for line in sys.stdin.buffer:
+            request = json.loads(line)
+            if request["method"] == "account/read":
+                result = {"account": {"type": "chatgpt"}}
+            elif request["method"] == "model/list":
+                result = {"data": [
+                    {"model": "gpt-5.6-luna", "supportedReasoningEfforts": [{"reasoningEffort": "low"}]},
+                    {"model": "gpt-5.6-sol", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]},
+                    {"model": "gpt-6-astra", "supportedReasoningEfforts": [{"reasoningEffort": "high"}]},
+                ]}
+            else:
+                result = {"received": request}
+            sys.stdout.buffer.write(json.dumps({"id": request["id"], "result": result}).encode() + b"\n")
+            sys.stdout.buffer.flush()
+        return exit_code
+    data = sys.stdin.buffer.read()
+    sys.stdout.buffer.write(data)
+    if "--emit-cli-path" in argv:
+        sys.stdout.buffer.write(os.environ["CODEX_CLI_PATH"].encode())
+    if "--emit-argv" in argv:
+        sys.stdout.buffer.write(json.dumps(argv).encode())
+    if "--emit-event" in argv:
+        sys.stdout.buffer.write(b'{"method":"item/agentMessage/delta","params":{"delta":"stream"}}\n')
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(b"child-stderr\x00\xff")
+    sys.stderr.buffer.flush()
+    return exit_code
+
+
+if __name__ == "__main__" and "--fake-child" in sys.argv:
+    raise SystemExit(fake_child(sys.argv[2:]))
+elif __name__ == "__main__":
+    unittest.main()

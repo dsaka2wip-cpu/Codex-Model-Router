@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Model Router</title>
+  <desc id="desc">A local adaptive token saver for Codex Desktop</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#07111f"/><stop offset=".55" stop-color="#172554"/><stop offset="1" stop-color="#3b0764"/></linearGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="12" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1200" height="420" rx="36" fill="url(#bg)"/>
+  <circle cx="1080" cy="70" r="150" fill="#7c3aed" opacity=".12"/><circle cx="80" cy="390" r="190" fill="#06b6d4" opacity=".10"/>
+  <g transform="translate(84 91)"><rect width="238" height="238" rx="54" fill="#0f172a" stroke="#67e8f9" stroke-width="3" opacity=".95"/><path d="M130 30 67 137h52l-13 71 66-112h-52z" fill="url(#bolt)" filter="url(#glow)"/><circle cx="119" cy="119" r="91" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="9 13" opacity=".7"/></g>
+  <g font-family="Segoe UI, Inter, Arial, sans-serif" fill="#f8fafc">
+    <text x="370" y="135" font-size="62" font-weight="800" letter-spacing="-2">Codex Model Router</text>
+    <text x="374" y="188" font-size="25" fill="#cbd5e1">THE LOCAL TOKEN SAVER FOR CODEX DESKTOP</text>
+    <g transform="translate(374 229)" font-size="20" font-weight="700"><rect width="156" height="48" rx="24" fill="#083344" stroke="#22d3ee"/><text x="78" y="31" text-anchor="middle" fill="#67e8f9">FAST · LUNA</text><rect x="172" width="171" height="48" rx="24" fill="#172554" stroke="#60a5fa"/><text x="257" y="31" text-anchor="middle" fill="#93c5fd">NORMAL · SOL</text><rect x="359" width="184" height="48" rx="24" fill="#3b0764" stroke="#c084fc"/><text x="451" y="31" text-anchor="middle" fill="#d8b4fe">DEEP · ASTRA</text></g>
+    <text x="374" y="329" font-size="28" font-weight="600" fill="#e2e8f0">Save tokens automatically. Keep the native GUI.</text>
+    <text x="374" y="367" font-size="21" fill="#94a3b8">0 classifier tokens · 0 extra API keys · 100% local routing</text>
+  </g>
+</svg>

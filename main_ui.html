@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Codex 모델 라우터</title>
+  <style>
+    :root{color-scheme:light;--bg:#f4f5f7;--panel:#fff;--ink:#17191c;--muted:#69707a;--line:#dfe2e7;--accent:#2667d8;--accent2:#eaf1ff;--danger:#b42318;--shadow:0 12px 36px rgba(20,30,45,.08)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}
+    .shell{width:min(1120px,100%);min-height:100dvh;margin:auto;padding:20px;display:grid;grid-template-rows:auto minmax(360px,1fr) auto;gap:14px}
+    .top,.chat,.composer{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+    .top{padding:17px 20px;display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.top h1{font-size:19px;margin:0 0 3px}.top p{margin:0;color:var(--muted)}.status{display:flex;gap:7px;align-items:center;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:#8b949e}.dot.busy{background:#d97706;box-shadow:0 0 0 4px #fef3c7}.dot.ok{background:#16803c}.small{font-size:12px;color:var(--muted)}
+    .chat{min-height:0;overflow:auto;padding:18px}.empty{height:100%;min-height:280px;display:grid;place-content:center;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}.msg{max-width:84%;margin:0 0 14px}.msg.user{margin-left:auto}.bubble{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:14px;padding:11px 13px;background:#f8f9fb}.user .bubble{background:var(--accent);border-color:var(--accent);color:#fff}.meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 3px 4px;color:var(--muted);font-size:11px}.user .meta{justify-content:flex-end}.phase{color:#7c3aed}.pending-wrap{display:grid;gap:10px;margin:16px 0}.pending{border:1px solid #f2c76f;background:#fffbeb;border-radius:14px;padding:14px}.pending h3{font-size:14px;margin:0 0 4px}.pending p{margin:5px 0;color:#684c12}.pending pre,.raw{white-space:pre-wrap;overflow-wrap:anywhere;background:#fff;border:1px solid var(--line);border-radius:9px;padding:9px;max-height:240px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+    .composer{padding:14px}.controls{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(150px,.8fr) minmax(150px,.8fr) minmax(130px,.65fr);gap:9px;margin-bottom:9px}.field{display:grid;gap:4px}.field label,.label{font-size:11px;color:var(--muted);font-weight:650}.input,select,textarea{width:100%;border:1px solid #cfd4dc;border-radius:9px;background:#fff;padding:8px 10px;outline:none}.input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(38,103,216,.12)}textarea{resize:vertical;min-height:92px}.prompt-row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}.send-actions{display:grid;gap:7px}.btn{border:1px solid #cfd4dc;background:#fff;border-radius:9px;padding:8px 13px;font-weight:650}.btn:hover:not(:disabled){background:#f4f6f8}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.danger{color:var(--danger)}.preview{min-height:22px;margin:6px 1px 0;color:var(--muted);font-size:12px}.preview strong{color:var(--accent)}.error{display:none;margin:9px 0 0;border-radius:9px;padding:8px 10px;background:#fef3f2;color:var(--danger);white-space:pre-wrap}.error.show{display:block}
+    details{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}summary{cursor:pointer;color:var(--muted)}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}.details-grid h3{font-size:12px;margin:12px 0 5px}.resume{display:flex;gap:7px}.usage-note{font-size:11px;color:var(--muted)}.question{border-top:1px solid rgba(104,76,18,.2);padding-top:9px;margin-top:9px}.question fieldset{border:0;padding:0;margin:6px 0}.option{display:flex;gap:7px;align-items:flex-start;margin:5px 0}.option span{display:grid}.option small{color:var(--muted)}a{color:var(--accent)}
+    @media(max-width:720px){.shell{padding:8px;gap:8px}.top,.chat,.composer{border-radius:12px}.top{padding:13px;display:block}.status{margin-top:8px}.controls{grid-template-columns:1fr 1fr}.controls .cwd{grid-column:1/-1}.prompt-row{display:block}.send-actions{grid-template-columns:1fr 1fr;margin-top:8px}.msg{max-width:94%}.details-grid{grid-template-columns:1fr}.chat{padding:12px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div><h1>질문마다 메인 모델·노력 수준 자동 선택</h1><p>이 입력 화면에서 보낸 요청만 라우팅됩니다. 기존 Codex 데스크톱 입력에는 영향을 주지 않습니다.</p></div>
+      <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">연결 중</span></div>
+    </header>
+
+    <section id="chat" class="chat" aria-live="polite"><div id="messages"><div class="empty"><div><strong>대화를 시작하세요</strong>질문 성격에 맞춰 메인 모델과 노력 수준을 고릅니다.</div></div></div><div id="pendingRoot" class="pending-wrap"></div></section>
+
+    <section class="composer">
+      <div class="controls">
+        <div class="field cwd"><label for="cwd">작업 폴더 (절대 경로)</label><input id="cwd" class="input" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label for="model">모델</label><select id="model"><option value="auto">자동 선택</option></select></div>
+        <div class="field"><label for="effort">노력 수준</label><select id="effort"><option value="auto">자동 선택</option></select></div>
+        <div class="field"><label for="tier">서비스 티어</label><select id="tier"><option value="inherit">기존 속도 설정 유지</option><option value="default">표준 속도</option></select></div>
+      </div>
+      <form id="sendForm">
+        <div class="prompt-row">
+          <div class="field"><label for="prompt">메시지</label><textarea id="prompt" placeholder="질문이나 작업을 입력하세요" required></textarea></div>
+          <div class="send-actions"><button id="send" class="btn primary" type="submit">보내기</button><button id="stop" class="btn danger" type="button" disabled>중지</button></div>
+        </div>
+      </form>
+      <div id="preview" class="preview">자동 경로 미리보기가 여기에 표시됩니다.</div>
+      <p class="small">자동 분류는 로컬 휴리스틱입니다. 모델이나 노력 수준을 직접 고르면 수동 선택이 우선합니다.</p>
+      <div id="error" class="error" role="alert"></div>
+      <details>
+        <summary>대화 관리 및 원시 사용량</summary>
+        <div class="details-grid">
+          <div>
+            <h3>대화 관리</h3>
+            <p class="small">새 대화는 현재 작업 폴더로 시작합니다.</p>
+            <button id="newChat" class="btn" type="button">새 대화</button>
+            <p class="small">현재 스레드: <code id="currentThread">없음</code></p>
+            <h3><label for="threadId">기존 Codex 스레드 ID (선택)</label></h3>
+            <div class="resume"><input id="threadId" class="input" autocomplete="off" spellcheck="false" placeholder="thread id"><button id="resume" class="btn" type="button">이어가기</button></div>
+            <p class="small">다른 앱에서 같은 작업이 진행 중이라면 먼저 마무리한 뒤 이어가세요.</p>
+            <button id="shutdown" class="btn danger" type="button">라우터 종료</button>
+            <p class="small">라우터만 종료하며 원본 Codex 앱은 종료하지 않습니다.</p>
+          </div>
+          <div>
+            <h3>원시 토큰 사용량</h3>
+            <p class="usage-note">서버가 제공한 값을 그대로 표시합니다. 비용 추정치는 제공하지 않습니다.</p>
+            <pre id="usage" class="raw">사용량 정보 없음</pre>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script>
+  (() => {
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const chat=$('chat'), messagesRoot=$('messages'), pendingRoot=$('pendingRoot'), prompt=$('prompt'), cwd=$('cwd'), model=$('model'), effort=$('effort'), tier=$('tier');
+    const err=$('error'), preview=$('preview'), send=$('send'), stop=$('stop'), dot=$('statusDot'), statusText=$('statusText');
+    let token=sessionStorage.getItem('routerToken')||'', revision, models=[], modelKey='', previewTimer=0, previewSeq=0, polling=false, closed=false, pollTimer;
+    const pendingNodes=new Map();
+
+    const fragmentToken=new URLSearchParams(location.hash.slice(1)).get('token');
+    if(fragmentToken){token=fragmentToken;sessionStorage.setItem('routerToken',token);history.replaceState(null,'',location.pathname+location.search);}
+
+    function showError(value){err.textContent=value||'';err.classList.toggle('show',Boolean(value));}
+    function pretty(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+    function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node}
+    function safeUrl(value){try{const u=new URL(String(value));return /^(https?):$/.test(u.protocol)?u.href:null}catch{return null}}
+
+    async function api(path,body){
+      const options={headers:{'X-Router-Token':token}};
+      if(body!==undefined){options.method='POST';options.headers['Content-Type']='application/json';options.body=JSON.stringify(body)}
+      const response=await fetch(path,options);
+      let data;try{data=await response.json()}catch{throw new Error(`서버 응답을 읽을 수 없습니다 (${response.status})`)}
+      if(!response.ok)throw new Error(data.error||data.message||`요청 실패 (${response.status})`);
+      return data;
+    }
+
+    function populateModels(next){
+      const key=pretty(next||[]);if(key===modelKey)return;modelKey=key;models=next||[];
+      const selected=model.value;model.replaceChildren(new Option('자동 선택','auto'));
+      models.forEach(item=>model.add(new Option(item.displayName?`${item.displayName} · ${item.model}`:item.model,item.model)));
+      model.value=[...model.options].some(o=>o.value===selected)?selected:'auto';populateEfforts();
+    }
+    function populateEfforts(){
+      const selected=effort.value;effort.replaceChildren(new Option('자동 선택','auto'));
+      const allowed=model.value==='auto'?((models[0]||{}).supportedReasoningEfforts||[]).map(x=>x.reasoningEffort).filter(value=>models.every(m=>(m.supportedReasoningEfforts||[]).some(x=>x.reasoningEffort===value))):((models.find(m=>m.model===model.value)||{}).supportedReasoningEfforts||[]).map(x=>x.reasoningEffort);
+      allowed.forEach(value=>effort.add(new Option(value,value)));
+      effort.value=[...effort.options].some(o=>o.value===selected)?selected:'auto';schedulePreview();
+    }
+
+    function messageNode(message){
+      const wrap=el('article',`msg ${message.role||'system'}`), meta=el('div','meta');
+      meta.append(el('span','',message.role==='user'?'나':message.role==='assistant'?'Codex':message.role==='tool'?'도구':'시스템'));
+      if(message.phase)meta.append(el('span','phase',message.phase));
+      if(message.model)meta.append(el('span','',message.model));if(message.effort)meta.append(el('span','',message.effort));if(message.reason)meta.append(el('span','',message.reason));
+      wrap.append(meta,el('div','bubble',message.text||''));return wrap;
+    }
+    function actionButton(text,kind,handler){const b=el('button',`btn ${kind||''}`,text);b.type='button';b.addEventListener('click',handler);return b}
+    async function respond(id,action,extra){
+      showError('');try{const data=await api('/api/respond',{id,action,...extra});if(data&&data.revision!==undefined)applyState(data)}catch(e){showError(e.message)}
+    }
+    function approvalCard(request){
+      const p=request.params||{}, card=el('section','pending');card.append(el('h3','',request.method),el('p','',p.reason||p.message||'승인이 필요한 요청입니다.'),el('pre','',pretty(p)));
+      const actions=el('div','actions');const accept=actionButton('한 번 승인','primary',()=>respond(request.id,'accept'));accept.disabled=Boolean(p._reviewUnavailable);if(p._reviewUnavailable)card.append(el('p','','변경 내용을 확인할 수 없어 승인할 수 없습니다. 거절 후 기본 앱에서 확인하세요.'));actions.append(accept,actionButton('거절','danger',()=>respond(request.id,'decline')));card.append(actions);return card;
+    }
+    function inputCard(request){
+      const card=el('section','pending');card.append(el('h3','',request.method));const questions=(request.params&&request.params.questions)||[];
+      questions.forEach((q,index)=>{const box=el('div','question');box.dataset.id=q.id||String(index);box.append(el('div','label',q.header||'질문'),el('p','',q.question||''));const fs=el('fieldset');
+        (q.options||[]).forEach((o,i)=>{const label=el('label','option'), radio=document.createElement('input');radio.type='radio';radio.name=`q-${request.id}-${index}`;radio.value=o.label||'';if(i===0)radio.checked=true;const words=el('span');words.append(el('span','',o.label||''),el('small','',o.description||''));label.append(radio,words);fs.append(label)});
+        const free=document.createElement('input');free.className='input free';free.placeholder='직접 입력 (선택)';box.append(fs,free);card.append(box)});
+      const actions=el('div','actions');actions.append(actionButton('답변 보내기','primary',()=>{const answers={};card.querySelectorAll('.question').forEach(box=>{const typed=box.querySelector('.free').value.trim(),chosen=box.querySelector('input[type=radio]:checked');answers[box.dataset.id]=[typed||(chosen?chosen.value:'')]});respond(request.id,'answer',{answers})}),actionButton('거절','danger',()=>respond(request.id,'decline')));card.append(actions);return card;
+    }
+    function elicitationCard(request){
+      const p=request.params||{}, card=el('section','pending');card.append(el('h3','',request.method),el('p','',p.message||p.reason||'서버가 추가 정보를 요청했습니다.'));
+      const url=safeUrl(p.url);if(url){const a=el('a','',url);a.href=url;a.target='_blank';a.rel='noopener noreferrer';card.append(a);const actions=el('div','actions');actions.append(actionButton('완료로 응답','primary',()=>respond(request.id,'accept')),actionButton('거절','danger',()=>respond(request.id,'decline')));card.append(actions);return card}
+      if(p.requestedSchema)card.append(el('div','label','요청한 입력 구조'),el('pre','',pretty(p.requestedSchema)));card.append(el('div','label','JSON 응답'));const area=document.createElement('textarea');area.value='{}';area.setAttribute('aria-label','JSON 응답');card.append(area);
+      const actions=el('div','actions');actions.append(actionButton('응답 보내기','primary',()=>{let content;try{content=JSON.parse(area.value);if(!content||Array.isArray(content)||typeof content!=='object')throw new Error()}catch{showError('JSON 응답은 객체 형식이어야 합니다.');return}respond(request.id,'answer',{content})}),actionButton('거절','danger',()=>respond(request.id,'decline')));card.append(actions);return card;
+    }
+    function pendingNode(request){
+      if(['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval'].includes(request.method))return approvalCard(request);
+      if(request.method==='item/tool/requestUserInput'||request.method==='tool/requestUserInput')return inputCard(request);
+      if(request.method==='mcpServer/elicitation/request')return elicitationCard(request);
+      const card=el('section','pending');card.append(el('h3','',request.method||'알 수 없는 요청'),el('p','','지원하지 않는 요청입니다. 내용을 확인한 뒤 거절할 수 있습니다.'),el('pre','',pretty(request.params||{})));const actions=el('div','actions');actions.append(actionButton('거절','danger',()=>respond(request.id,'decline')));card.append(actions);return card;
+    }
+    function renderConversation(messages,pending){
+      const wasBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<90, oldTop=chat.scrollTop, frag=document.createDocumentFragment();
+      if(!messages.length&&!pending.length)frag.append(el('div','empty','대화를 시작하세요'));else messages.forEach(m=>frag.append(messageNode(m)));
+      messagesRoot.replaceChildren(frag);
+      const live=new Set();
+      pending.forEach((request,index)=>{
+        live.add(request.id);const key=pretty([request.method,request.params]);let entry=pendingNodes.get(request.id);
+        if(!entry||entry.key!==key){const node=pendingNode(request);if(entry)entry.node.replaceWith(node);entry={key,node};pendingNodes.set(request.id,entry)}
+        const current=pendingRoot.children[index];if(current!==entry.node)pendingRoot.insertBefore(entry.node,current||null);
+      });
+      pendingNodes.forEach((entry,id)=>{if(!live.has(id)){entry.node.remove();pendingNodes.delete(id)}});
+      requestAnimationFrame(()=>{chat.scrollTop=wasBottom?chat.scrollHeight:oldTop});
+    }
+    function applyState(state,{forceFields=false}={}){
+      if(!state||typeof state!=='object')return;populateModels(state.models||models);
+      if(forceFields){cwd.value=state.cwd||'';$('threadId').value=state.threadId||''}else{if(!cwd.value&&state.cwd)cwd.value=state.cwd;if(!$('threadId').value&&state.threadId)$('threadId').value=state.threadId}
+      $('currentThread').textContent=state.threadId||'없음';
+      const busy=Boolean(state.busy);send.disabled=busy;stop.disabled=!busy;$('newChat').disabled=busy;$('resume').disabled=busy;dot.className=`dot ${busy?'busy':'ok'}`;statusText.textContent=busy?'작업 중':'대기 중';
+      $('usage').textContent=state.usage?pretty(state.usage):'사용량 정보 없음';if(state.error)showError(state.error);
+      if(state.revision!==revision){revision=state.revision;renderConversation(state.messages||[],state.pending||[])}
+      if(state.route&&!prompt.value.trim())showRoute({...state.route,runtimeModel:state.runtimeModel||state.route.runtimeModel,runtimeEffort:state.runtimeEffort||state.route.runtimeEffort},true);
+    }
+    function showRoute(route,sent=false){
+      const runtime=route.runtimeModel?` · 서버 실행 모델: ${route.runtimeModel}${route.runtimeEffort?` · ${route.runtimeEffort}`:''} (${route.runtimeModel===route.model?'요청과 동일':'서버에서 변경됨'})`:'';
+      preview.replaceChildren(document.createTextNode(sent?'요청 모델: ':'예상 경로: '),el('strong','',`${route.model||'—'} · ${route.effort||'—'}`),document.createTextNode(`${runtime}${route.reason?` — ${route.reason}`:''}`));
+    }
+    function schedulePreview(){clearTimeout(previewTimer);const text=prompt.value;if(!text.trim()){preview.textContent='자동 경로 미리보기가 여기에 표시됩니다.';return}const seq=++previewSeq;previewTimer=setTimeout(async()=>{try{const route=await api('/api/preview',{prompt:text,model:model.value,effort:effort.value});if(seq===previewSeq)showRoute(route.route||route,false)}catch(e){if(seq===previewSeq)preview.textContent=`미리보기 오류: ${e.message}`}},350)}
+    async function refreshFields(){applyState(await api('/api/state'),{forceFields:true})}
+
+    $('sendForm').addEventListener('submit',async event=>{event.preventDefault();const text=prompt.value;if(!text.trim())return;showError('');send.disabled=true;try{const data=await api('/api/send',{prompt:text,cwd:cwd.value.trim(),model:model.value,effort:effort.value,tier:tier.value});prompt.value='';schedulePreview();if(data&&data.revision!==undefined)applyState(data)}catch(e){showError(e.message);send.disabled=false}});
+    stop.addEventListener('click',async()=>{showError('');try{const data=await api('/api/interrupt',{});if(data&&data.revision!==undefined)applyState(data)}catch(e){showError(e.message)}});
+    $('newChat').addEventListener('click',async()=>{showError('');try{await api('/api/new',{cwd:cwd.value.trim()});await refreshFields()}catch(e){showError(e.message)}});
+    $('resume').addEventListener('click',async()=>{const threadId=$('threadId').value.trim();if(!threadId){showError('이어갈 스레드 ID를 입력하세요.');return}showError('');try{await api('/api/resume',{threadId});await refreshFields()}catch(e){showError(e.message)}});
+    $('shutdown').addEventListener('click',async()=>{showError('');try{await api('/api/shutdown',{});closed=true;clearInterval(pollTimer);send.disabled=stop.disabled=$('newChat').disabled=$('resume').disabled=$('shutdown').disabled=true;dot.className='dot';statusText.textContent='라우터 종료됨';preview.textContent='라우터가 종료되었습니다. 원본 Codex 앱은 계속 실행됩니다.'}catch(e){showError(e.message)}});
+    model.addEventListener('change',populateEfforts);effort.addEventListener('change',schedulePreview);prompt.addEventListener('input',schedulePreview);
+    prompt.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('sendForm').requestSubmit()}});
+
+    async function poll(){if(polling||closed)return;polling=true;try{applyState(await api('/api/state'))}catch(e){dot.className='dot';statusText.textContent='연결 끊김';showError(e.message)}finally{polling=false}}
+    if(!token)showError('접속 토큰이 없습니다. 제공된 #token=… 주소로 다시 열어 주세요.');
+    poll();pollTimer=setInterval(poll,700);prompt.focus();
+  })();
+  </script>
+</body>
+</html>

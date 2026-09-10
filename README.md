@@ -1,86 +1,218 @@
+<p align="center">
+  <img src="assets/hero.svg" alt="Codex Model Router — Save tokens automatically" width="920">
+</p>
+
+<p align="center">
+  <strong>작은 질문에 Astra를 태우지 마세요.</strong><br>
+  Codex 기본 GUI는 그대로, 매 턴에 필요한 만큼의 모델과 reasoning effort만 자동으로 씁니다.
+</p>
+
+<p align="center">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows_11-tested-0078D4?logo=windows11&logoColor=white">
+  <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
+  <img alt="Classifier tokens" src="https://img.shields.io/badge/classifier_tokens-0-22C55E">
+  <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-48_passed-7C3AED">
+</p>
+
+---
+
 # Codex Model Router
 
-Codex가 하위 작업의 종류에 맞춰 모델과 노력 수준을 선택하게 하는 사용자 훅입니다. Python 표준 라이브러리만 사용하며, 분류용 API나 프록시 서버가 없습니다.
+**Codex Model Router는 Codex Desktop용 로컬 토큰 절약기입니다.** 질문이 들어올 때마다 로컬 규칙으로 난도를 판정하고, 쉬운 일은 Luna, 보통 일은 Sol, 어려운 일은 Astra로 보냅니다. 분류를 위해 다른 LLM을 부르지 않으므로 **분류 토큰은 0**입니다.
 
-## 배정표
+```text
+“JSON이 뭐야? 한 문장으로.”          → FAST   → Luna  / low
+“이 함수 구현하고 테스트해.”         → NORMAL → Sol   / medium
+“인증 구조를 위협 모델과 함께 설계해.” → DEEP   → Astra / high
+```
 
-| 역할 | 작업 | 모델 | 노력 수준 |
-|---|---|---|---|
-| `lookup` | 정확한 위치 검색, 지정 항목 추출, 서식 정리 | GPT-5.6 Luna | medium |
-| `implementation` | 호출 흐름 분석, 일반 구현·UI·테스트 작성 | GPT-5.6 Sol | medium |
-| `critical_review` | 깊은 디버깅, 보안·무결성·의미 검증 | GPT-5.6 Sol | high |
-| `hard_problem` | 독립된 어려운 설계, 요구 충돌 해결 | GPT-6 Astra | high |
+> **목표:** 모든 질문을 최고 모델로 시작하는 낭비를 줄이면서, 어려운 작업에는 강한 모델을 남겨 두는 것.
 
-기계적인 명령은 본체가 도구로 직접 처리합니다. 설계도 본체가 해결할 수 있으면 추가 에이전트를 만들지 않습니다. Terra와 모든 작업의 max 고정은 기본 배정에 넣지 않았습니다. 이 표는 품질·효율 검증을 시작할 기본값이며 보편적인 최적값이나 절감률을 보장하지 않습니다.
+## 왜 토큰을 크게 아낄 수 있나
 
-## 작동 방식과 확인한 한계
+모든 턴을 Astra/Ultra로 보내면 한 문장 설명, 파일명 찾기, 간단한 수정도 가장 비싼 경로를 탑니다. Router는 실제 작업을 시작하기 전에 무료 로컬 분류를 거칩니다.
 
-1. `UserPromptSubmit` 훅이 매 사용자 입력에 짧은 역할 배정 지침을 추가합니다. 본체가 이전 대화를 포함해 하위 작업을 분류하고, 생성 도구의 `model`과 `reasoning_effort`를 직접 지정합니다.
-2. `PreToolUse` 훅은 지원되는 `spawn_agent` / `Agent` 경로에서 명시적인 역할 표식을 읽어 빠진 모델·노력 수준을 채웁니다. 다른 인수는 모두 보존합니다.
-3. `SubagentStart` 훅은 실제 시작 모델을 기록합니다. 공개 이벤트에 effort가 없으면 null로 남깁니다. 부모 작업 식별자는 짧은 SHA-256 지문으로만 기록해 서로 다른 실행을 구분합니다.
-4. **Codex 0.153.4의 실제 V2 검사에서는 하위 생성이 `PreToolUse`를 통과하지 않았습니다.** 따라서 1번이 주 경로이고 2번은 지원 경로의 보완 수단입니다. 모든 도구를 강제로 제어하는 보안 경계가 아닙니다. 본체의 분류·인자 지정이 잘못될 가능성은 남습니다.
+| 경로 | 쓰임 | 모델 / effort | 공개 token rate 기준 Astra 대비* |
+|---|---|---|---:|
+| ⚡ **FAST** | 짧은 설명·조회·추출·정리 | Luna / low | input 약 **98%↓**, output 약 **97.6%↓** |
+| 🛠️ **NORMAL** | 일반 질문·구현·테스트 | Sol / medium | input/output 약 **60%↓** |
+| 🧠 **DEEP** | 복잡한 설계·깊은 디버깅·중요 검토 | Astra / high | 품질 우선 |
 
-사용자는 평소처럼 작업을 요청하면 됩니다. `[codex-route:lookup]` 같은 표식은 본체가 하위 지시의 첫 줄에 넣는 내부 약속이며, 사용자가 매번 입력할 필요가 없습니다. 원문 키워드만 보고 난이도를 추측하지 않고 짧은 후속 지시도 앞선 맥락과 함께 분류하게 했습니다.
+\* 모델별 공개 token-based credit rate의 단순 비율입니다. 실제 절감률은 캐시, reasoning token, 대화 길이, 오분류와 재작업에 따라 달라집니다. 이 프로젝트는 절감액을 보장하지 않으며 GUI 푸터에 항상 **추정**으로 표시합니다.
 
-- 사용자가 직접 지정한 모델·effort는 자동 배정보다 우선합니다.
-- 이미 지정된 모델/effort 또는 사용자 정의 `agent_type`은 재작성하지 않습니다.
-- `fork_turns=all` 또는 생략된 V2 전체 상속을 임의로 `none`으로 바꾸지 않습니다. 다른 모델을 쓸 때 본체가 처음부터 충분한 목표·제약·근거·검증 조건을 담아 독립 작업을 구성해야 합니다.
-- 알 수 없는 역할, 잘못된 JSON, 로그 쓰기 실패는 원래 작업을 막지 않습니다.
-- 실패 모델을 차례대로 모두 거치는 재시도, 본체의 중복 조사, 불필요한 재귀 위임을 지시하지 않습니다.
-- 필요한 원문·출처·필수 테스트·사용자 진행 설명을 줄이지 않습니다.
-- 본체의 저장 기본 모델·노력 수준, 속도 등급, 권한 및 기존 훅은 변경하지 않습니다.
+**절약 포인트는 세 가지입니다.**
 
-## 설치 및 상태 확인 — Windows PowerShell
+- 분류용 API 호출 **0회**
+- 자동 경로에서 Ultra 사용 **0회**
+- 별도 API 키·별도 API 과금 **없음** — 기존 ChatGPT Pro 로그인을 그대로 사용
 
-Python 3과 로그인된 Codex CLI가 필요합니다. Python 표준 라이브러리만 사용하므로 pip 의존성은 없습니다. `python`이 PATH에 없다면 아래 `$routerPython`을 사용할 Python 실행 파일의 절대 경로로 지정하세요. 설치 후 Python이나 저장소 위치를 바꾸면 설치·활성화 명령을 다시 실행해야 합니다.
+## Codex GUI를 그대로 씁니다
+
+```mermaid
+flowchart LR
+    A[Codex Desktop GUI] -->|stdio / JSONL| B[Local Model Router]
+    B -->|turn/start만 조정| C[기존 Codex App Server]
+    C --> D[기존 ChatGPT Pro 인증]
+    B -. 로컬 규칙 .-> E{FAST / NORMAL / DEEP}
+```
+
+설치된 Codex 앱 파일을 패치하지 않습니다. Router는 실제 `codex.exe app-server`를 자식 프로세스로 실행하고 JSONL을 양방향 중계합니다. 로그인, thread, streaming, tool call, 승인, 파일 변경은 기존 App Server가 계속 처리합니다.
+
+## 3분 시작
+
+### 요구 사항
+
+- Windows 11
+- 설치 및 로그인된 Codex Desktop
+- Python 3
+- 저장소 경로에서 PowerShell 실행
+
+### 1. 내려받기
 
 ```powershell
-$routerPython = (Get-Command python -ErrorAction Stop).Source
 git clone https://github.com/dsaka2wip-cpu/Codex-Model-Router.git
 Set-Location .\Codex-Model-Router
-& $routerPython -m unittest -v
-& $routerPython .\install.py install
-& $routerPython .\manage.py activate --standalone
-& $routerPython .\manage.py status --standalone
 ```
 
-`install.py`는 사용자 `$CODEX_HOME/hooks.json`(미설정 시 `~/.codex/hooks.json`)에 이 라우터의 세 항목만 병합합니다. 재설치는 중복을 만들지 않습니다. 기존 hooks.json은 먼저 이 폴더의 `backups/`에 보존합니다. 기본 모델이나 플러그인 설정을 다시 쓰지 않습니다.
-
-`manage.py activate`는 설치·활성화가 승인된 상황에서만 사용합니다. Codex App Server가 반환한 정의와 설치 코드의 명령·이벤트·매처·동기 실행·타임아웃을 대조하고, **이 세 훅의 현재 해시만** 기본 신뢰 설정에 등록합니다. 전역 신뢰 우회는 사용하지 않습니다. 설정 백업은 비밀 설정의 유출을 피하도록 Codex 홈의 `config.toml.router-backup-*`에 둡니다. 기존 설정 버전이 달라지면 쓰기를 거절합니다.
-
-활성화는 해당 훅 세 개가 `enabled: true`, `trustStatus: trusted`인지 재확인합니다. `status`는 네트워크 모델 생성 없이 훅 상태와 모델 카탈로그를 조회합니다. `--standalone`은 관리 명령 동안 별도 stdio App Server를 사용하며 실행 후 종료합니다. 기존 앱·서비스는 종료하지 않습니다. Windows 검증 환경에서는 daemon proxy 연결 대신 이 옵션을 사용했습니다.
-
-직접 관리하려면 Codex CLI의 `/hooks`에서도 세 `Codex Model Router` 항목을 검토·신뢰·비활성화할 수 있습니다. 새 명령 정의는 다시 신뢰가 필요합니다. 훅의 정의 해시는 스크립트 본문 전체의 무결성 검사와 같지 않으므로 스크립트 변경 뒤에는 테스트를 다시 실행하세요.
-
-**이미 진행 중인 데스크톱 턴에 새 훅이 소급 적용된다고 보장하지 않습니다.** 설치 후 다음 사용자 입력부터 훅 실행 기록을 확인하세요. 파일이 존재하거나 신뢰 상태라는 것만으로 특정 앱 경로가 실제 실행됐다고 단정하지 않습니다. 강제 재시작·새 작업 생성은 설치 과정에 포함하지 않습니다.
-
-## 검증과 로그
-
-- `python -m unittest -v`: API 호출 없이 배정, 인수 보존, 명시값 우선, 전체 상속, 알 수 없는 입력, 설치 중복·제거·백업을 검사합니다.
-- `live_check.py`: **명시적으로 실행할 때만 Codex 구독 사용량이 발생**하는 작은 실제 확인입니다. 합성 JSON 한 항목을 한 자식에게 읽히고, 가능한 런타임 메타데이터를 `live-check.json`에 저장합니다. 자동 설치나 일반 훅 실행에서는 호출하지 않습니다.
-- `logs/YYYY-MM-DD.jsonl`: UTC 시각, 정책 주입/배정/보존 여부, 알려진 역할·모델·effort만 기록합니다. 사용자 프롬프트, 기사, 파일 경로, 키, 원래 작업 ID, 대화 내용, 비공개 사고 과정을 수집하지 않습니다. 삭제해도 실행에 영향이 없습니다.
-- `routed`는 훅이 생성 인수를 재작성했다는 뜻이며 청구 서버의 모델 사용 증명은 아닙니다. V2는 이 이벤트 없이 입력 정책을 통해 직접 모델을 지정할 수 있습니다.
-- 원시 토큰, 캐시 토큰, 출력의 부분집합인 추론 토큰, 비용, 구독 한도를 구분하세요. 전체 효율은 본체·자식·검토·실패를 합쳐 수락된 결과당 비교해야 합니다. 이 도구는 청구액이나 절감률을 추정하지 않습니다.
-
-Windows / Codex 0.153.4에서 오프라인 검사 7개가 통과했고, 실제 합성 lookup 작업의 Luna 시작과 정답을 확인했습니다. 실제 effort는 공개 시작 이벤트에 없어 별도로 검증하지 못했습니다. `live_check.py`의 결과에서 모델 시작 확인과 model/effort 동시 확인을 구분합니다. 로컬 핸드오프·실행 로그·백업은 저장소에 포함하지 않습니다.
-
-## 비활성화 / 제거
+### 2. 빌드 및 사전 검사
 
 ```powershell
-$routerPython = (Get-Command python -ErrorAction Stop).Source
-# 저장소 폴더에서 실행
-& $routerPython .\install.py uninstall
+.\Build-NativeRouter.ps1
+.\Start-AdaptiveCodex.ps1 -CheckOnly
 ```
 
-이 라우터의 세 훅만 제거하고 다른 훅은 유지합니다. config.toml의 사용되지 않는 신뢰 해시 항목은 남을 수 있지만 훅 명령은 실행되지 않습니다. 나중에 다른 설정이 바뀔 수 있으므로 예전 config.toml 전체를 자동 복원하지 않습니다. 등록이 남아 있는 동안에는 이 폴더를 이동·삭제하지 마세요. 제거 후 폴더와 로그를 정리할 수 있습니다.
+### 3. Codex 연결
 
-## 파일과 근거
+Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd`**를 더블클릭하거나 실행합니다.
 
-- `router.py`: 배정표, 입력 정책, 생성 인수 재작성, 최소 로그.
-- `install.py`: 기존 훅을 보존하는 설치·제거와 백업.
-- `manage.py`: Codex 기본 API를 통한 발견·모델 지원·정확한 정의 신뢰 확인.
-- `test_router.py`: 오프라인 검사. `live_check.py`: 선택적인 실제 실행 검사.
+```powershell
+.\Start-AdaptiveCodex.ps1
+```
 
-공식 근거: [Hooks와 도구 예외](https://learn.chatgpt.com/docs/hooks#tool-coverage), [입력 재작성 계약](https://learn.chatgpt.com/docs/hooks#pretooluse), [신뢰 등록](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks), [하위 에이전트 모델 선택](https://learn.chatgpt.com/docs/agent-configuration/subagents#choosing-models-and-reasoning).
+이미 실행 중인 Codex에는 중간 삽입할 수 없습니다. 실행기가 새 Codex 프로세스에만 `CODEX_CLI_PATH`를 전달하며 사용자·시스템 전역 환경변수는 바꾸지 않습니다.
 
-배정 참고: [Instavar 비교 실험](https://instavar.com/research/agents/gpt-5-6-codex-models-reasoning-levels-benchmark-2026), [사용자의 위임 비용 비교](https://www.reddit.com/r/codex/comments/1veac6s/a_cost_analysis_of_my_usage_of_using_sol_using/), [Astra·Sol·Luna 역할 분담 사례](https://www.reddit.com/r/codex/comments/1w8iwgi/updated_threetier_agent_architecture_astra_med/). 환경·과제·반복 수의 한계가 있으므로 검증된 최적 배정으로 주장하지 않습니다.
+### 즉시 원복
+
+Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거나 실행합니다.
+
+```powershell
+.\Restore-Codex.ps1
+```
+
+원복은 Router를 거치지 않고 기존 Codex를 시작합니다. 앱, 설정, 로그인, 대화 데이터는 삭제하지 않습니다.
+
+## 매 턴 무엇을 썼는지 보여줍니다
+
+최종 답변과 Plan 결과 끝에 로컬 푸터를 붙입니다.
+
+```text
+Router · 이번 턴: FAST → Luna / Low · 직전 턴: NORMAL → Sol / Medium
+세션 17턴 · Luna 9 / Sol 6 / Astra 2 · 사용량 절감 추정 63%
+```
+
+집계는 현재 Router 프로세스의 해당 thread 기준입니다. 실제 token usage가 있으면 공개 credit rate로 계산하고, 없으면 공개 평균 local message 값을 사용합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
+
+## 자동보다 내 선택이 우선
+
+현재 Codex 프로토콜은 GUI 기본값과 사용자가 방금 명시적으로 고른 값을 신뢰성 있게 구별하지 못합니다. 그래서 질문 첫 줄의 명시적 제어문을 우선합니다.
+
+| 질문 첫 줄 | 동작 |
+|---|---|
+| `[router auto]` | 모델과 effort 모두 자동 |
+| `[router off]` | GUI가 보낸 값 그대로 사용 |
+| `[router tier=deep]` | 이번 턴만 DEEP |
+| `[router model=gui effort=auto]` | 모델은 GUI, effort만 자동 |
+| `[router model=sol effort=high]` | 모델과 effort 직접 지정 |
+
+기존 `/model astra high` 형식도 지원합니다. Plan mode의 `collaborationMode.settings.model`과 `reasoning_effort`도 함께 처리합니다. 같은 thread 안에서 모델이 바뀌어도 대화 맥락은 유지됩니다.
+
+## 안전하게 실패합니다
+
+- 파싱 실패, 알 수 없는 모델 조합, API key 인증, 다른 provider에서는 원래 요청을 보존합니다.
+- 프롬프트, 응답, 인증 토큰, API 키, tool 인수, 명령, 파일 diff를 Router 로그에 저장하지 않습니다.
+- 서버 stderr는 GUI로 전달할 뿐 별도 수집하지 않습니다.
+- 네트워크 실패나 거절된 요청을 자동 재전송하지 않습니다.
+- Router가 죽으면 연결도 끊어지므로 Codex를 닫고 원복 실행기로 다시 시작합니다.
+
+## 현재 검증 상태
+
+Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했습니다.
+
+| 검증 | 결과 |
+|---|---|
+| 오프라인 단위·프로토콜 검사 | ✅ 48개 통과 |
+| 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
+| 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
+| GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
+| 독립 App Server에서 Luna → Sol, 같은 thread 문맥 | ✅ 확인 |
+| Plan nested settings와 streaming | ✅ 확인 |
+| 명시적 GUI 값 보존 (`[router off]`) | ✅ 확인 |
+| tool/command 승인 흐름 | ✅ 현재 작업에서 정상 |
+| 새 푸터의 실제 GUI 렌더링 | ⏳ 오프라인 검증 완료, GUI 재시작 검증 대기 |
+| 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
+
+### GUI의 “모델이 변경되었습니다” 표시에 관하여
+
+턴 위의 `Astra에서 Astra로 모델이 변경되었습니다` 같은 문구와 하단 피커는 실제 실행 결과가 아닐 수 있습니다. 현재 앱이 다음 턴의 GUI 선택값으로 미리 만드는 표시이며, `turn/started` 응답에는 실제 실행 model/effort가 없습니다. 앱 자체를 패치하거나 가짜 서버 알림을 만들지 않고는 이 문구를 실제 라우팅값으로 안전하게 교체할 수 없어 Router 푸터를 별도로 제공합니다.
+
+## 설정
+
+`state/adaptive-config.json`에서 모델과 effort를 독립적으로 설정할 수 있습니다. 값은 턴마다 다시 읽으며 파일이 없거나 잘못되면 원래 요청을 보냅니다.
+
+```json
+{
+  "model": "auto",
+  "effort": "auto",
+  "tiers": {
+    "fast":   { "model": "gpt-5.6-luna", "effort": "low" },
+    "normal": { "model": "gpt-5.6-sol",  "effort": "medium" },
+    "deep":   { "model": "gpt-6-astra",  "effort": "high" }
+  }
+}
+```
+
+`state/`, 로그, 백업, 핸드오프, 실제 검사 결과는 Git에서 제외됩니다.
+
+## 테스트
+
+추가 패키지 없이 Python 표준 라이브러리만 사용합니다.
+
+```powershell
+python -m unittest -q
+```
+
+실제 구독 사용량이 발생하는 검사는 자동 실행하지 않습니다.
+
+```powershell
+python live_native_check.py
+python live_native_check.py --plan-only
+```
+
+## Windows Smart App Control
+
+로컬에서 빌드한 `AdaptiveCodexRouter.exe`는 서명되지 않았습니다. Smart App Control이 켜진 PC에서는 차단될 수 있으며 파일 하나만 허용하는 관리자 예외는 제공되지 않습니다. 지원되는 배포 경로는 신뢰된 공급자의 RSA 코드서명 인증서로 최종 실행 파일을 서명하는 것입니다. 보안 기능을 끄는 자동화나 자체서명 인증서 등록을 제공하지 않습니다.
+
+## 함께 들어 있는 도구
+
+이 저장소의 중심은 **기본 GUI stdio Router**입니다. 초기 실험에서 만든 두 경로도 함께 보존합니다.
+
+- `Start Router.cmd`: 별도 localhost 입력 UI
+- `router.py`, `install.py`, `manage.py`: 하위 에이전트 모델 라우팅 훅
+
+두 도구는 기본 GUI 메인 턴 Router와 적용 범위가 다릅니다.
+
+## 근거와 참고
+
+- [Codex App Server 프로토콜](https://learn.chatgpt.com/docs/app-server)
+- [Codex 인증 모드](https://learn.chatgpt.com/docs/app-server#authentication-modes)
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+- [OpenAI Codex 요금·사용량·token-based rate](https://learn.chatgpt.com/docs/pricing)
+- README 구성 영감: [Ponytail](https://github.com/DietrichGebert/ponytail)
+
+---
+
+<p align="center">
+  <strong>쉬운 일은 가볍게. 어려운 일은 제대로.</strong><br>
+  Codex Model Router — spend intelligence where it matters.
+</p>
