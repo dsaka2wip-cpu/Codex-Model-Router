@@ -2,6 +2,7 @@ import copy
 import io
 import json
 import os
+import queue
 import sys
 import tempfile
 import threading
@@ -9,7 +10,8 @@ import unittest
 from pathlib import Path
 
 from adaptive_policy import AdaptivePolicy, DEFAULT
-from stdio_router import _json_transform, RpcFailure, run_bridge
+from stdio_router import (RECENT_CONTEXT_CHARS, RECENT_TURNS, STATE_SUMMARY_CHARS,
+                          InternalClassifier, _json_transform, RpcFailure, run_bridge)
 
 
 class Policy:
@@ -61,6 +63,7 @@ class StdioRouterTests(unittest.TestCase):
             stdout=output,
             stderr=errors,
             max_line_bytes=limit,
+            classifier_sidecar=False,
         )
         return code, output.getvalue(), errors.getvalue()
 
@@ -97,6 +100,83 @@ class StdioRouterTests(unittest.TestCase):
         error = RpcFailure({"code": -32602, "message": "Invalid params containing secret details"})
         self.assertEqual((error.rpc_code, error.error_kind), (-32602, "invalid_params"))
         self.assertNotIn("secret", str(error))
+
+    def test_classifier_context_is_bounded_and_keeps_state_plus_recent_turns(self):
+        turns = [{"items": [
+            {"type": "userMessage", "content": [{"type": "text", "text": f"request-{i}-" + "x" * 2500}]},
+            {"type": "agentMessage", "phase": "final_answer", "text": f"answer-{i}-" + "y" * 2500},
+        ]} for i in range(8)]
+        summary = "active goal and constraints"
+        context = InternalClassifier._context({"turns": turns}, summary)
+        self.assertIn("[Persistent task state]\n" + summary, context)
+        self.assertNotIn("request-4-", context)
+        self.assertIn("answer-7-", context)
+        self.assertLessEqual(len(context), STATE_SUMMARY_CHARS + RECENT_CONTEXT_CHARS + 80)
+        self.assertEqual(RECENT_TURNS, 3)
+
+    def test_classifier_uses_lightweight_sidecar_and_recreates_it_after_exit(self):
+        class Process:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        class Sidecar:
+            def __init__(self):
+                self.events, self.calls, self.process, self.closed = queue.Queue(), [], Process(), False
+
+            def call(self, method, params, timeout=None):
+                self.calls.append((method, params, timeout))
+                if method == "thread/start":
+                    return {"thread": {"id": "sidecar-thread", "ephemeral": True}}
+                if method == "turn/start":
+                    common = {"threadId": "sidecar-thread", "turnId": "sidecar-turn"}
+                    self.events.put({"method": "item/completed", "params": {**common, "item": {
+                        "type": "agentMessage", "phase": "final_answer",
+                        "text": json.dumps({"model": "gpt-5.6-luna", "effort": "high",
+                                            "subagents": [], "state_summary": "Keep active constraints."})}}})
+                    self.events.put({"method": "thread/tokenUsage/updated", "params": {**common,
+                        "tokenUsage": {"last": {"inputTokens": 900, "cachedInputTokens": 0,
+                                                  "outputTokens": 30, "reasoningOutputTokens": 10,
+                                                  "totalTokens": 930}}}})
+                    self.events.put({"method": "turn/completed", "params": {**common,
+                        "turn": {"id": "sidecar-turn", "status": "completed"}}})
+                    return {"turn": {"id": "sidecar-turn", "status": "inProgress"}}
+                if method == "thread/delete":
+                    return {}
+                raise AssertionError(method)
+
+            def reply(self, *_args, **_kwargs):
+                raise AssertionError("sidecar requested a tool")
+
+            def close(self):
+                self.closed = True
+
+        sidecars = [Sidecar(), Sidecar()]
+        classifier = InternalClassifier(io.BytesIO(), sidecar_factory=lambda: sidecars.pop(0))
+        classifier._call = lambda method, _params, timeout=None: ({"thread": {
+            "id": "main-thread", "cwd": os.getcwd(), "turns": [{"items": [
+                {"type": "userMessage", "content": [{"type": "text", "text": "Prior request"}]},
+                {"type": "agentMessage", "phase": "final_answer", "text": "Prior answer"},
+            ]}]}} if method == "thread/read" else (_ for _ in ()).throw(AssertionError(method)))
+        catalog = {
+            "gpt-5.6-luna": {"efforts": ["low", "high"]},
+            "gpt-5.6-sol": {"efforts": ["medium"]},
+        }
+        first = sidecars[0]
+        result = classifier.classify("main-thread", "Current request",
+                                     {"model": "gpt-5.6-sol", "effort": "medium"}, catalog, [])
+        self.assertEqual((result["model"], result["effort"], result["context_mode"],
+                          result["usage"]["inputTokens"]),
+                         ("gpt-5.6-luna", "high", "sidecar", 900))
+        turn = next(params for method, params, _ in first.calls if method == "turn/start")
+        self.assertIn("Current request", turn["input"][0]["text"])
+        first.process.returncode = 1
+        replacement = classifier._get_sidecar()
+        self.assertTrue(first.closed)
+        self.assertIsNot(replacement, first)
+        classifier.close()
+        self.assertTrue(replacement.closed)
 
     def test_server_transform_can_inject_footer_delta_before_completed_item(self):
         transform = _json_transform(FooterPolicy(), "server")
@@ -206,6 +286,7 @@ class StdioRouterTests(unittest.TestCase):
                 stdin=SequencedInput(requests, [policy.auth_ready, policy.catalog_ready]),
                 stdout=output,
                 stderr=io.BytesIO(),
+                classifier_sidecar=False,
             )
             audit = [json.loads(line) for path in (root / "audit").glob("*.jsonl")
                      for line in path.read_text(encoding="utf-8").splitlines()]
@@ -284,7 +365,8 @@ def fake_child(argv):
                     "threadId": "classifier-thread", "turnId": "classifier-turn", "item": {
                         "id": "classifier-answer", "type": "agentMessage", "phase": "final_answer",
                         "text": '{"model":"gpt-5.6-luna","effort":"high","subagents":['
-                                '{"role":"lookup","model":"gpt-5.6-luna","effort":"high"}]}'}}}).encode() + b"\n")
+                                '{"role":"lookup","model":"gpt-5.6-luna","effort":"high"}],'
+                                '"state_summary":"Keep the active routing goal and constraints."}'}}}).encode() + b"\n")
                 sys.stdout.buffer.write(json.dumps({"method": "thread/tokenUsage/updated", "params": {
                     "threadId": "classifier-thread", "turnId": "classifier-turn", "tokenUsage": {
                         "last": {"inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,

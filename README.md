@@ -146,6 +146,9 @@ Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: N
 - 파싱 실패, 알 수 없는 모델 조합, API key 인증, 다른 provider에서는 원래 요청을 보존합니다.
 - 프롬프트, 응답, 인증 토큰, API 키, tool 인수, 명령, 파일 diff를 Router 로그에 저장하지 않습니다.
 - 판별 로그에는 조정에 필요한 시간·토큰 수와 제한된 실패 유형만 숫자/분류값으로 기록합니다.
+- 판별 입력은 현재 요청 원문, 최근 3턴 최대 4,000자, 메모리 내 작업 상태 최대 1,200자로 제한합니다.
+- 작업 상태 요약은 같은 Sol/medium 판별 응답에서 함께 만들며 디스크에 저장하지 않습니다. 앱을 다시 시작하면 최근 문맥에서 다시 구성합니다.
+- 판별은 동일한 `codex.exe`와 ChatGPT 인증을 공유하는 경량 App Server sidecar에서 실행하며, 프로젝트 지침·스킬·플러그인·MCP·실행 도구를 비활성화합니다.
 - 서버 stderr는 GUI로 전달할 뿐 별도 수집하지 않습니다.
 - 네트워크 실패나 거절된 요청을 자동 재전송하지 않습니다.
 - Router가 죽으면 연결도 끊어지므로 Codex를 닫고 원복 실행기로 다시 시작합니다.
@@ -156,12 +159,13 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 55개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 57개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
 | Sol/medium 하위 작업 계획·모델/effort 다양화 | ✅ 정책·프로토콜 검사 통과 |
 | 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
+| 실제 GUI 경량 판별 sidecar | ✅ 32,447 → 7,207 tokens (약 78% 감소) |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
 | 실제 GUI의 23조합 LLM 판별 → Sol/high | ✅ 요청 route와 서버 settings 일치 |

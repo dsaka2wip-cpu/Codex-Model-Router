@@ -67,6 +67,7 @@ class AdaptiveTests(unittest.TestCase):
     def test_classifier_can_choose_model_and_effort_independently(self):
         decisions = iter([
             {"model": "gpt-5.6-luna", "effort": "high", "subagents": [], "duration_ms": 123,
+             "context_chars": 456,
              "usage": {"inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,
                        "reasoningOutputTokens": 2, "totalTokens": 55}},
             {"model": "gpt-5.6-terra", "effort": "max", "subagents": [], "usage": None},
@@ -87,9 +88,9 @@ class AdaptiveTests(unittest.TestCase):
         records = [json.loads(line) for path in self.policy.audit_dir.glob("*.jsonl")
                    for line in path.read_text(encoding="utf-8").splitlines()]
         first = next(row for row in records if row["event"] == "classifier")
-        self.assertEqual((first["duration_ms"], first["input_tokens"], first["cached_tokens"],
+        self.assertEqual((first["duration_ms"], first["context_chars"], first["input_tokens"], first["cached_tokens"],
                           first["output_tokens"], first["reasoning_tokens"], first["total_tokens"]),
-                         (123, 50, 10, 5, 2, 55))
+                         (123, 456, 50, 10, 5, 2, 55))
 
     def test_all_23_live_catalog_pairs_are_accepted(self):
         pairs = [(row["model"], effort["reasoningEffort"])
