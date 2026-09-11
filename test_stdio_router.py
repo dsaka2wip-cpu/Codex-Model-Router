@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from adaptive_policy import AdaptivePolicy, DEFAULT
+from classifier_eval import score_case, summarize
 from stdio_router import (RECENT_CONTEXT_CHARS, RECENT_TURNS, STATE_SUMMARY_CHARS,
                           InternalClassifier, _json_transform, RpcFailure, run_bridge)
 
@@ -177,6 +178,22 @@ class StdioRouterTests(unittest.TestCase):
         self.assertIsNot(replacement, first)
         classifier.close()
         self.assertTrue(replacement.closed)
+
+    def test_eval_scorer_separates_acceptance_from_critical_underroute(self):
+        case = {"id": "critical", "group": "review", "expected": {
+            "models": ["gpt-5.6-sol", "gpt-6-astra"], "efforts": ["high", "xhigh"],
+            "minimum_model": "gpt-5.6-sol", "minimum_effort": "high",
+            "subagents": [1, 2], "roles": ["critical_review"]}}
+        low = score_case(case, {"model": "gpt-5.6-luna", "effort": "low", "subagents": [],
+                                "usage": {"totalTokens": 10}})
+        good = score_case(case, {"model": "gpt-5.6-sol", "effort": "high", "subagents": [
+            {"role": "critical_review", "model": "gpt-5.6-sol", "effort": "high"}],
+                                 "usage": {"totalTokens": 20}})
+        report = summarize([low, good], 2)
+        self.assertFalse(low["accepted"])
+        self.assertTrue(low["critical_underroute"])
+        self.assertTrue(good["accepted"])
+        self.assertEqual((report["critical_underroutes"], report["classifier_total_tokens"]), (1, 30))
 
     def test_server_transform_can_inject_footer_delta_before_completed_item(self):
         transform = _json_transform(FooterPolicy(), "server")

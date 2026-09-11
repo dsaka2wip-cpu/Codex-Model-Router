@@ -159,7 +159,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 57개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 58개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
@@ -168,7 +168,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 | 실제 GUI 경량 판별 sidecar | ✅ 32,447 → 7,207 tokens (약 78% 감소) |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
-| 실제 GUI의 23조합 LLM 판별 → Sol/high | ✅ 요청 route와 서버 settings 일치 |
+| 23개 후보를 제시한 실제 GUI 판별 1건 → Sol/high | ✅ 요청 route와 서버 settings 일치 |
 | 독립 App Server에서 Luna → Sol, 같은 thread 문맥 | ✅ 확인 |
 | Plan nested settings와 결과 전달 | ✅ 실제 GUI에서 Sol/high route·nested settings·완료 결과 확인 |
 | 명시적 GUI 값 보존 (`[router off]`) | ✅ 확인 |
@@ -177,6 +177,19 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 | 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 및 실제 GUI 재시작 확인 |
 | Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
 | 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
+
+## 라우팅 평가
+
+`classifier_eval.py`는 12개의 합성·비민감 사례로 실제 Sol/medium 판별기의 선택 범위와 판별 비용을 확인합니다. 기본 실행은 앞의 6개 canary만 사용하며, `--run` 없이는 모델을 호출하지 않습니다.
+
+```powershell
+python .\classifier_eval.py --run
+python .\classifier_eval.py --run --limit 12
+```
+
+실행 환경의 Codex CLI에 ChatGPT 인증이 있어야 합니다. Desktop이 App Server에만 주입한 인증은 일반 터미널에 전달되지 않을 수 있으며, 이 경우 평가기는 `RuntimeError` 유형만 표시하고 호출 전에 중단합니다.
+
+결과는 Git에서 제외된 `state/classifier-eval-latest.json`에 사례 ID, model/effort, 하위 작업 역할·수, 시간·토큰 숫자만 저장합니다. 프롬프트·응답·오류 원문은 저장하지 않습니다. 이 평가는 라우팅 적합성과 판별 사용량을 측정하며, 실제 작업 결과물의 품질이나 ChatGPT Pro의 금전 비용을 뜻하지 않습니다.
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 

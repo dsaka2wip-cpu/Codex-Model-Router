@@ -1,0 +1,170 @@
+[
+  {
+    "id": "lookup_definition",
+    "group": "lookup",
+    "prompt": "JSON이 무엇인지 한 문장으로 설명해.",
+    "expected": {
+      "models": ["gpt-5.6-luna"],
+      "efforts": ["low", "medium"],
+      "minimum_model": "gpt-5.6-luna",
+      "minimum_effort": "low",
+      "subagents": [0, 0],
+      "roles": []
+    }
+  },
+  {
+    "id": "lookup_extraction",
+    "group": "lookup",
+    "prompt": "다음 JSON에서 beta 값만 답해: {\"alpha\": 7, \"beta\": 11}",
+    "expected": {
+      "models": ["gpt-5.6-luna"],
+      "efforts": ["low", "medium"],
+      "minimum_model": "gpt-5.6-luna",
+      "minimum_effort": "low",
+      "subagents": [0, 0],
+      "roles": []
+    }
+  },
+  {
+    "id": "mechanical_format",
+    "group": "mechanical",
+    "prompt": "README의 'NORMAL → Sol / Medium' 한 곳을 'NORMAL: Sol / Medium'으로 바꾸고 다른 내용은 건드리지 마.",
+    "expected": {
+      "models": ["gpt-5.6-luna", "gpt-5.6-terra"],
+      "efforts": ["low", "medium", "high"],
+      "minimum_model": "gpt-5.6-luna",
+      "minimum_effort": "low",
+      "subagents": [0, 0],
+      "roles": []
+    }
+  },
+  {
+    "id": "bounded_bugfix",
+    "group": "implementation",
+    "prompt": "Python의 parse_control 함수가 빈 입력에서 예외를 내는 원인을 고치고 기존 테스트 파일에 회귀 테스트 하나를 추가해.",
+    "expected": {
+      "models": ["gpt-5.6-terra", "gpt-5.6-sol"],
+      "efforts": ["medium", "high", "xhigh"],
+      "minimum_model": "gpt-5.6-terra",
+      "minimum_effort": "medium",
+      "subagents": [0, 1],
+      "roles": ["implementation", "critical_review"]
+    }
+  },
+  {
+    "id": "bounded_multifile",
+    "group": "implementation",
+    "prompt": "명세가 확정된 작은 CLI 옵션을 파서, 실행 함수, README 세 파일에 추가하고 단위 테스트를 실행해.",
+    "expected": {
+      "models": ["gpt-5.6-terra", "gpt-5.6-sol"],
+      "efforts": ["medium", "high", "xhigh"],
+      "minimum_model": "gpt-5.6-terra",
+      "minimum_effort": "medium",
+      "subagents": [0, 1],
+      "roles": ["implementation", "critical_review"]
+    }
+  },
+  {
+    "id": "plan_no_edit",
+    "group": "planning",
+    "prompt": "로그인 서비스와 결제 서비스를 큐로 연결하는 구조를 두 단계로 설계해. 파일은 수정하지 마.",
+    "expected": {
+      "models": ["gpt-5.6-terra", "gpt-5.6-sol"],
+      "efforts": ["medium", "high", "xhigh"],
+      "minimum_model": "gpt-5.6-terra",
+      "minimum_effort": "medium",
+      "subagents": [0, 1],
+      "roles": ["lookup", "critical_review"]
+    }
+  },
+  {
+    "id": "ambiguous_distributed_debug",
+    "group": "debugging",
+    "prompt": "로그인과 결제 사이 큐에서 간헐적 중복 권한 부여와 이벤트 유실이 함께 발생한다. 여러 원인을 독립적으로 조사하고 재현·수정·검증까지 진행해.",
+    "expected": {
+      "models": ["gpt-5.6-sol", "gpt-6-astra"],
+      "efforts": ["high", "xhigh", "max", "ultra"],
+      "minimum_model": "gpt-5.6-sol",
+      "minimum_effort": "high",
+      "subagents": [1, 3],
+      "roles": ["lookup", "implementation", "critical_review", "hard_problem"]
+    }
+  },
+  {
+    "id": "security_integrity_review",
+    "group": "review",
+    "prompt": "멀티테넌트 인증 우회 가능성이 있는 결제 권한 코드를 전체 호출 경로와 데이터 경계까지 보안 검토하고 증거가 있는 취약점만 수정해.",
+    "expected": {
+      "models": ["gpt-5.6-sol", "gpt-6-astra"],
+      "efforts": ["high", "xhigh", "max", "ultra"],
+      "minimum_model": "gpt-5.6-sol",
+      "minimum_effort": "high",
+      "subagents": [1, 3],
+      "roles": ["lookup", "implementation", "critical_review", "hard_problem"]
+    }
+  },
+  {
+    "id": "hard_architecture",
+    "group": "architecture",
+    "prompt": "서로 충돌하는 저지연·강한 일관성·다중 리전 요구를 가진 결제 원장을 설계하고 장애 모델과 복구 불변식을 독립 검증해.",
+    "expected": {
+      "models": ["gpt-5.6-sol", "gpt-6-astra"],
+      "efforts": ["xhigh", "max", "ultra"],
+      "minimum_model": "gpt-5.6-sol",
+      "minimum_effort": "xhigh",
+      "subagents": [1, 3],
+      "roles": ["lookup", "critical_review", "hard_problem"]
+    }
+  },
+  {
+    "id": "complex_short_followup",
+    "group": "context",
+    "prior": [
+      {
+        "user": "여러 서비스에 걸친 모델 라우터의 장애 복구·승인·스트리밍 설계를 구현하고 실제 GUI까지 검증해.",
+        "assistant": "호출 경로와 복구 경계를 확인했고 구현 계획을 준비했다."
+      }
+    ],
+    "prompt": "그 계획대로 구현해.",
+    "expected": {
+      "models": ["gpt-5.6-sol", "gpt-6-astra"],
+      "efforts": ["high", "xhigh", "max"],
+      "minimum_model": "gpt-5.6-sol",
+      "minimum_effort": "high",
+      "subagents": [1, 3],
+      "roles": ["lookup", "implementation", "critical_review", "hard_problem"]
+    }
+  },
+  {
+    "id": "restart_followup",
+    "group": "context",
+    "prior": [
+      {
+        "user": "새 Router 코드로 재실행한 뒤 실제 GUI 로그의 판별·스트리밍·유휴 복구를 검증해.",
+        "assistant": "코드와 테스트는 준비됐고 앱 재실행 뒤 런타임 증거를 확인해야 한다."
+      }
+    ],
+    "prompt": "재실행했어.",
+    "expected": {
+      "models": ["gpt-5.6-terra", "gpt-5.6-sol"],
+      "efforts": ["medium", "high"],
+      "minimum_model": "gpt-5.6-terra",
+      "minimum_effort": "medium",
+      "subagents": [0, 1],
+      "roles": ["lookup", "critical_review"]
+    }
+  },
+  {
+    "id": "explicit_status_check",
+    "group": "mechanical",
+    "prompt": "현재 Git 브랜치와 작업 트리 변경 여부만 확인해서 한 문장으로 알려줘. 파일은 수정하지 마.",
+    "expected": {
+      "models": ["gpt-5.6-luna", "gpt-5.6-terra"],
+      "efforts": ["low", "medium", "high"],
+      "minimum_model": "gpt-5.6-luna",
+      "minimum_effort": "low",
+      "subagents": [0, 0],
+      "roles": []
+    }
+  }
+]
