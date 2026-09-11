@@ -206,6 +206,8 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 & '.\Start Adaptive Codex.cmd' -ClassifierEval -ClassifierEvalLimit 12
 ```
 
+2026-09-12 전체 평가에서는 **12/12 accepted**, 치명적 하향 선택 0건, 불필요한 하위 작업 0건을 기록했습니다. 선택 분포는 Luna/low 4건, Terra/medium 2건, Sol/high 2건, Astra/xhigh 1건, Astra/max 3건이었고 판별기 평균 사용량은 6,447 tokens였습니다.
+
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 
 턴 위의 `Astra에서 Astra로 모델이 변경되었습니다` 같은 문구와 하단 피커는 실제 실행 결과가 아닐 수 있습니다. 현재 앱이 다음 턴의 GUI 선택값으로 미리 만드는 표시이며, `turn/started` 응답에는 실제 실행 model/effort가 없습니다. 앱 자체를 패치하거나 가짜 서버 알림을 만들지 않고는 이 문구를 실제 라우팅값으로 안전하게 교체할 수 없어 Router 푸터를 별도로 제공합니다.
