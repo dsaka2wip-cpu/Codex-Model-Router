@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-65_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-66_passed-7C3AED">
 </p>
 
 ---
@@ -161,7 +161,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 65개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 66개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
@@ -199,6 +199,8 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 ```
 
 결과는 Git에서 제외된 `state/classifier-eval-latest.json`에 사례 ID, model/effort, 하위 작업 역할·수, 시간·토큰 숫자만 저장합니다. 프롬프트·응답·오류 원문은 저장하지 않습니다. 이 평가는 라우팅 적합성과 판별 사용량을 측정하며, 실제 작업 결과물의 품질이나 ChatGPT Pro의 금전 비용을 뜻하지 않습니다.
+
+평가가 이미 실행 중이면 추가 실행은 즉시 종료되며, 진행 보고서는 원자적으로 교체되어 재시작이나 중복 실행 중에도 깨진 JSON을 남기지 않습니다.
 
 전체 12개 평가가 필요할 때만 아래처럼 제한을 올립니다.
 

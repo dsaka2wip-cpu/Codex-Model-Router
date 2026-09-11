@@ -2,7 +2,10 @@
 
 import argparse
 import json
+import msvcrt
+import os
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +17,38 @@ ROOT = Path(__file__).resolve().parent
 MODEL_ORDER = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
 CASES_PATH = ROOT / "classifier_eval_cases.json"
 REPORT_PATH = ROOT / "state" / "classifier-eval-latest.json"
+LOCK_PATH = ROOT / "state" / "classifier-eval.lock"
+
+
+@contextmanager
+def evaluation_lock(path=LOCK_PATH):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    if handle.seek(0, os.SEEK_END) == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+
+
+def write_report(report, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(path.suffix + ".tmp")
+    pending.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    os.replace(pending, path)
 
 
 class SnapshotClassifier(InternalClassifier):
@@ -134,8 +169,7 @@ def run(cases, report_path=REPORT_PATH):
                                 "duration_ms": error.duration_ms})
             report["cases"].append(row)
             report["summary"] = summarize(report["cases"], len(cases))
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            write_report(report, report_path)
             print(json.dumps(row, separators=(",", ":")), flush=True)
             if "failure" in row or row.get("critical_underroute"):
                 break
@@ -143,7 +177,7 @@ def run(cases, report_path=REPORT_PATH):
         classifier.close()
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     report["summary"] = summarize(report["cases"], len(cases))
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_report(report, report_path)
     print(json.dumps(report["summary"], separators=(",", ":")), flush=True)
     return 0 if report["summary"]["passed"] else 1
 
@@ -164,11 +198,15 @@ def main():
             parser.error("unknown --case id")
     else:
         cases = cases[:args.limit]
-    try:
-        return run(cases)
-    except Exception as error:
-        print(json.dumps({"stopped": type(error).__name__}, separators=(",", ":")), flush=True)
-        return 2
+    with evaluation_lock() as acquired:
+        if not acquired:
+            print('{"stopped":"AlreadyRunning"}', flush=True)
+            return 3
+        try:
+            return run(cases)
+        except Exception as error:
+            print(json.dumps({"stopped": type(error).__name__}, separators=(",", ":")), flush=True)
+            return 2
 
 
 if __name__ == "__main__":

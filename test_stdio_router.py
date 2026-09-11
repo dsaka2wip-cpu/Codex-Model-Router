@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from adaptive_policy import AdaptivePolicy, DEFAULT
-from classifier_eval import SnapshotClassifier, score_case, summarize
+from classifier_eval import SnapshotClassifier, evaluation_lock, score_case, summarize, write_report
 from stdio_router import (RECENT_CONTEXT_CHARS, RECENT_TURNS, STATE_SUMMARY_CHARS,
                           ClassifierFailure, InternalClassifier, _json_transform, _start_requested_eval,
                           RpcFailure, run_bridge)
@@ -56,6 +56,20 @@ class FooterPolicy(Policy):
 
 
 class StdioRouterTests(unittest.TestCase):
+    def test_classifier_eval_lock_and_atomic_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, lock = root / "report.json", root / "eval.lock"
+            write_report({"completed": 1}, report)
+            self.assertEqual(json.loads(report.read_text(encoding="utf-8")), {"completed": 1})
+            self.assertFalse(report.with_suffix(".json.tmp").exists())
+            with evaluation_lock(lock) as first:
+                self.assertTrue(first)
+                with evaluation_lock(lock) as second:
+                    self.assertFalse(second)
+            with evaluation_lock(lock) as released:
+                self.assertTrue(released)
+
     def bridge(self, payload, policy=None, *child_args, limit=16 * 1024 * 1024):
         output, errors = io.BytesIO(), io.BytesIO()
         code = run_bridge(
