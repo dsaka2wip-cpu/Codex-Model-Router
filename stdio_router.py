@@ -10,12 +10,14 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
 
 
 MAX_LINE_BYTES = 16 * 1024 * 1024
 CLASSIFIER_TIMEOUT = 45
+SOURCE_READ_TIMEOUT = 5
 RECENT_TURNS = 3
 RECENT_CONTEXT_CHARS = 4_000
 TASK_ANCHOR_CHARS = 600
@@ -121,6 +123,7 @@ class InternalClassifier:
         self.sidecar = None
         self.lock = threading.RLock()
         self.pending = {}
+        self.ignored_responses = OrderedDict()
         self.hidden = set()
         self.starting = 0
         self.turns = {}
@@ -134,6 +137,15 @@ class InternalClassifier:
         if self.sidecar is None and self.sidecar_factory is not None:
             self.sidecar = self.sidecar_factory()
         return self.sidecar
+
+    def _discard_sidecar(self, sidecar):
+        with self.lock:
+            if self.sidecar is sidecar:
+                self.sidecar = None
+        try:
+            sidecar.close()
+        except Exception:
+            pass
 
     def close(self):
         if self.sidecar is not None:
@@ -150,8 +162,13 @@ class InternalClassifier:
             self.writer.flush()
         if not event.wait(timeout or self.timeout):
             with self.lock:
-                self.pending.pop(request_id, None)
-            raise TimeoutError(method)
+                entry = self.pending.get(request_id)
+                if entry is None or "response" not in entry:
+                    self.pending.pop(request_id, None)
+                    self.ignored_responses[request_id] = None
+                    if len(self.ignored_responses) > 1024:
+                        self.ignored_responses.popitem(last=False)
+                    raise TimeoutError(method)
         with self.lock:
             response = self.pending.pop(request_id)["response"]
         if "error" in response:
@@ -162,6 +179,9 @@ class InternalClassifier:
         """Return True when an internal response/event must stay hidden from the GUI."""
         with self.lock:
             request_id = message.get("id")
+            if request_id in self.ignored_responses and message.get("method") is None:
+                self.ignored_responses.pop(request_id, None)
+                return True
             if request_id in self.pending and message.get("method") is None:
                 entry = self.pending[request_id]
                 entry["response"] = message
@@ -234,9 +254,22 @@ class InternalClassifier:
             rows.append("[Recent turns]\n" + "\n\n".join(recent)[-RECENT_CONTEXT_CHARS:])
         return "\n\n".join(rows)
 
-    def _start_from_read(self, source_thread, model, effort, summary, sidecar=None):
-        read = self._call("thread/read", {"threadId": source_thread, "includeTurns": True})
-        thread = read.get("thread") or {}
+    def _read_source(self, source_thread, summary):
+        started_at = time.monotonic()
+        source_context = "read"
+        try:
+            read = self._call("thread/read", {"threadId": source_thread, "includeTurns": True},
+                              timeout=min(self.timeout, SOURCE_READ_TIMEOUT))
+            thread = read.get("thread") or {}
+        except TimeoutError:
+            if not summary:
+                raise
+            thread = {"turns": []}
+            source_context = "summary"
+        return (thread, self._context(thread, summary), source_context,
+                max(0, round((time.monotonic() - started_at) * 1000)))
+
+    def _start_hidden(self, thread, model, effort, sidecar=None):
         params = {
             "ephemeral": True,
             "model": model,
@@ -274,7 +307,7 @@ class InternalClassifier:
             if sidecar is None:
                 with self.lock:
                     self.hidden.add(hidden_thread)
-            return hidden_thread, self._context(thread, summary)
+            return hidden_thread
         finally:
             with self.lock:
                 self.starting -= 1
@@ -297,13 +330,17 @@ class InternalClassifier:
         sidecar = None
         context = ""
         context_mode = "read"
+        source_context = "read"
+        source_read_ms = 0
         try:
-            stage = "read"
+            stage = "source_read"
             with self.lock:
                 summary = self.summaries.get(source_thread, "")
+            thread, context, source_context, source_read_ms = self._read_source(source_thread, summary)
             sidecar = self._get_sidecar()
             context_mode = "sidecar" if sidecar else "read"
-            hidden_thread, context = self._start_from_read(source_thread, model, effort, summary, sidecar)
+            stage = "sidecar_start" if sidecar else "thread_start"
+            hidden_thread = self._start_hidden(thread, model, effort, sidecar)
             if sidecar is None:
                 with self.lock:
                     self.hidden.add(hidden_thread)
@@ -358,6 +395,7 @@ class InternalClassifier:
             }
             if sidecar:
                 sidecar.call("turn/start", turn_params, timeout=self.timeout)
+                stage = "turn_wait"
                 deadline = time.monotonic() + self.timeout
                 while not state["done"].is_set():
                     try:
@@ -411,6 +449,7 @@ class InternalClassifier:
                 self.summaries[source_thread] = state_summary
             return {"model": selected_model, "effort": selected_effort,
                     "subagents": subagents, "usage": state["usage"], "context_mode": context_mode,
+                    "source_context": source_context, "source_read_ms": source_read_ms,
                     "context_chars": len(context),
                     "duration_ms": max(0, round((time.monotonic() - started_at) * 1000))}
         except ClassifierFailure:
@@ -420,16 +459,20 @@ class InternalClassifier:
                             else "invalid_json" if isinstance(error, json.JSONDecodeError)
                             else "invalid_result" if isinstance(error, (ValueError, TypeError, KeyError))
                             else "rpc" if isinstance(error, RpcFailure) else "internal")
-            raise ClassifierFailure(stage, getattr(error, "rpc_code", None),
-                                    getattr(error, "error_kind", None), failure_kind,
-                                    max(0, round((time.monotonic() - started_at) * 1000))) from error
+            failure = ClassifierFailure(stage, getattr(error, "rpc_code", None),
+                                        getattr(error, "error_kind", None), failure_kind,
+                                        max(0, round((time.monotonic() - started_at) * 1000)))
+            if sidecar is not None and stage in {"sidecar_start", "turn_start", "turn_wait"}:
+                self._discard_sidecar(sidecar)
+            raise failure from error
         finally:
             if hidden_thread:
                 try:
                     (sidecar.call("thread/delete", {"threadId": hidden_thread}, timeout=5)
                      if sidecar else self._call("thread/delete", {"threadId": hidden_thread}, timeout=5))
                 except (OSError, RuntimeError, TimeoutError, ValueError):
-                    pass
+                    if sidecar is not None:
+                        self._discard_sidecar(sidecar)
                 with self.lock:
                     self.turns.pop(hidden_thread, None)
 

@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-55_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-61_passed-7C3AED">
 </p>
 
 ---
@@ -43,7 +43,7 @@
 
 \* 표는 답변 모델 자체의 공개 token-based credit rate를 단순 비교한 값입니다. 실제 푸터 계산에는 **Sol/medium 판별 턴의 사용량도 포함**합니다. 실제 절감률은 캐시, reasoning token, 대화 길이, 판별과 재작업에 따라 달라지며 절감액을 보장하지 않습니다.
 
-**설계의 핵심은 세 가지입니다.**
+**설계의 핵심은 네 가지입니다.**
 
 - 판별기는 매번 동일한 **Sol / medium**이라 비용과 품질 기준이 일정
 - 답변 모델과 effort는 독립 선택 — 현재 확인된 **23개 조합** 전체를 실제 `model/list` 카탈로그에서 동적으로 사용
@@ -57,13 +57,13 @@
 ```mermaid
 flowchart LR
     A[Codex Desktop GUI] -->|stdio / JSONL| B[Local Model Router]
-    B -->|숨은 ephemeral fork| E[Sol / medium 판별]
+    B -->|압축 문맥| E[Sol / medium 판별 sidecar]
     E -->|answer + subagent routes| B
     B -->|원래 turn/start 조정| C[기존 Codex App Server]
     C --> D[기존 ChatGPT Pro 인증]
 ```
 
-설치된 Codex 앱 파일을 패치하지 않습니다. Router는 실제 `codex.exe app-server`를 자식 프로세스로 실행하고 JSONL을 양방향 중계합니다. 판별은 원래 thread의 문맥을 상속하는 메모리 내 fork에서 실행되고 완료 즉시 삭제됩니다. 현재 작업의 writer lock 때문에 fork가 거부되면, 같은 App Server에서 최근 사용자·최종 답변 텍스트만 읽어 격리된 ephemeral 판별 thread에 전달합니다. 두 경로 모두 읽기 전용·네트워크 차단·승인 없음으로 실행합니다. 로그인, 원래 thread, streaming, tool call, 승인, 파일 변경은 기존 App Server가 계속 처리합니다.
+설치된 Codex 앱 파일을 패치하지 않습니다. Router는 실제 `codex.exe app-server`를 자식 프로세스로 실행하고 JSONL을 양방향 중계합니다. 원래 thread에서 읽은 압축 문맥은 같은 ChatGPT 인증을 쓰는 경량 App Server sidecar의 격리된 ephemeral thread로 전달되며, 판별이 끝나면 삭제됩니다. 판별 thread는 읽기 전용·네트워크 차단·승인 없음으로 실행합니다. 로그인, 원래 thread, streaming, tool call, 승인, 파일 변경은 기존 App Server가 계속 처리합니다.
 
 ## 하위 작업도 따로 맞춥니다
 
@@ -147,6 +147,7 @@ Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: N
 - 프롬프트, 응답, 인증 토큰, API 키, tool 인수, 명령, 파일 diff를 Router 로그에 저장하지 않습니다.
 - 판별 로그에는 조정에 필요한 시간·토큰 수와 제한된 실패 유형만 숫자/분류값으로 기록합니다.
 - 판별 입력은 현재 요청 원문, 최근 3턴 최대 4,000자, 메모리 내 작업 상태 최대 1,200자로 제한합니다.
+- 부모 thread가 실행 중이라 읽기가 지연되면 5초 뒤 메모리 내 작업 상태로 판별을 계속합니다. 해당 상태가 아직 없으면 로컬 규칙으로 안전하게 처리합니다.
 - 작업 상태 요약은 같은 Sol/medium 판별 응답에서 함께 만들며 디스크에 저장하지 않습니다. 앱을 다시 시작하면 최근 문맥에서 다시 구성합니다.
 - 판별은 동일한 `codex.exe`와 ChatGPT 인증을 공유하는 경량 App Server sidecar에서 실행하며, 프로젝트 지침·스킬·플러그인·MCP·실행 도구를 비활성화합니다.
 - 서버 stderr는 GUI로 전달할 뿐 별도 수집하지 않습니다.
@@ -159,13 +160,14 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 58개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 61개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
 | Sol/medium 하위 작업 계획·모델/effort 다양화 | ✅ 정책·프로토콜 검사 통과 |
 | 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
 | 실제 GUI 경량 판별 sidecar | ✅ 32,447 → 7,207 tokens (약 78% 감소) |
+| GUI source read 지연 복구 | ✅ 정상 read 0.5초, 지연 read는 5초 후 안전 fallback |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
 | 23개 후보를 제시한 실제 GUI 판별 1건 → Sol/high | ✅ 요청 route와 서버 settings 일치 |

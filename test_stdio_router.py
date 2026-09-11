@@ -12,7 +12,7 @@ from pathlib import Path
 from adaptive_policy import AdaptivePolicy, DEFAULT
 from classifier_eval import score_case, summarize
 from stdio_router import (RECENT_CONTEXT_CHARS, RECENT_TURNS, STATE_SUMMARY_CHARS,
-                          InternalClassifier, _json_transform, RpcFailure, run_bridge)
+                          ClassifierFailure, InternalClassifier, _json_transform, RpcFailure, run_bridge)
 
 
 class Policy:
@@ -114,6 +114,45 @@ class StdioRouterTests(unittest.TestCase):
         self.assertIn("answer-7-", context)
         self.assertLessEqual(len(context), STATE_SUMMARY_CHARS + RECENT_CONTEXT_CHARS + 80)
         self.assertEqual(RECENT_TURNS, 3)
+
+    def test_source_read_timeout_uses_existing_summary(self):
+        classifier = InternalClassifier(io.BytesIO())
+        timeouts = []
+        classifier._call = lambda _method, _params, timeout=None: (
+            timeouts.append(timeout), (_ for _ in ()).throw(TimeoutError()))[1]
+        thread, context, mode, _duration = classifier._read_source("main", "Active state")
+        self.assertEqual((thread, context, mode),
+                         ({"turns": []}, "[Persistent task state]\nActive state", "summary"))
+        self.assertEqual(timeouts, [5])
+
+    def test_late_internal_response_after_timeout_stays_hidden(self):
+        classifier = InternalClassifier(io.BytesIO(), timeout=0.001)
+        with self.assertRaises(TimeoutError):
+            classifier._call("thread/read", {})
+        request_id = next(iter(classifier.ignored_responses))
+        self.assertTrue(classifier.handle_server({"id": request_id, "result": {}}))
+        self.assertFalse(classifier.ignored_responses)
+
+    def test_sidecar_timeout_discards_it_until_next_turn(self):
+        class Sidecar:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        sidecars = [Sidecar(), Sidecar()]
+        classifier = InternalClassifier(io.BytesIO(), sidecar_factory=lambda: sidecars.pop(0))
+        classifier._read_source = lambda *_args: ({"turns": []}, "", "read", 0)
+        classifier._start_hidden = lambda *_args: (_ for _ in ()).throw(TimeoutError())
+        first = sidecars[0]
+        with self.assertRaises(ClassifierFailure) as raised:
+            classifier.classify("main", "request", {"model": "gpt-5.6-sol", "effort": "medium"},
+                                {"gpt-5.6-sol": {"efforts": ["medium"]}}, [])
+        self.assertEqual(raised.exception.stage, "sidecar_start")
+        self.assertTrue(first.closed)
+        replacement = sidecars[0]
+        self.assertIs(classifier._get_sidecar(), replacement)
 
     def test_classifier_uses_lightweight_sidecar_and_recreates_it_after_exit(self):
         class Process:

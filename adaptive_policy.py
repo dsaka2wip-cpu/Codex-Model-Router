@@ -196,13 +196,16 @@ class AdaptivePolicy:
                 record[key] = value
             elif key in ("turns", "luna", "terra", "sol", "astra", "input_tokens", "cached_tokens",
                           "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent",
-                          "duration_ms", "context_chars") and type(value) is int:
+                          "duration_ms", "context_chars", "source_read_ms") and type(value) is int:
                 record[key] = value
             elif key == "usage_source" and value in ("total_delta", "last", "equal_turn"):
                 record[key] = value
-            elif key == "stage" and value in ("prepare", "fork", "read", "turn_start", "turn_wait", "result", "unknown"):
+            elif key == "stage" and value in ("prepare", "fork", "read", "source_read", "thread_start",
+                                                "sidecar_start", "turn_start", "turn_wait", "result", "unknown"):
                 record[key] = value
             elif key == "context_mode" and value in ("fork", "read", "sidecar"):
+                record[key] = value
+            elif key == "source_context" and value in ("read", "summary"):
                 record[key] = value
             elif key == "error_kind" and value in ("invalid_params", "not_found", "busy", "permission",
                                                      "unsupported", "other"):
@@ -345,6 +348,8 @@ class AdaptivePolicy:
                         self.audit("classifier", thread_id, model=decision["model"], effort=decision["effort"],
                                    count=len(decision.get("subagents", [])),
                                    context_mode=decision.get("context_mode"),
+                                   source_context=decision.get("source_context"),
+                                   source_read_ms=decision.get("source_read_ms"),
                                    context_chars=decision.get("context_chars"),
                                    duration_ms=decision.get("duration_ms"),
                                    input_tokens=usage.get("inputTokens"),
