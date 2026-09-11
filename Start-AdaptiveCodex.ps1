@@ -2,6 +2,7 @@
 param(
     [switch]$BypassRouter,
     [switch]$CheckOnly,
+    [switch]$WaitForExit,
     [switch]$LoadFunctionsOnly
 )
 
@@ -83,7 +84,16 @@ if ($CheckOnly) {
     Write-Host $message
     return
 }
-if (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue) { throw 'Codex is already running. Fully quit Codex, then run this script again.' }
+$running = Get-Process -Name ChatGPT -ErrorAction SilentlyContinue
+if ($running -and -not $WaitForExit) { throw 'Codex is already running. Fully quit Codex, or run with -WaitForExit.' }
+if ($running) {
+    Write-Host 'Codex is still running. Quit it fully; Adaptive Codex will start automatically.'
+    $deadline = [DateTime]::UtcNow.AddMinutes(5)
+    while ((Get-Process -Name ChatGPT -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue) { throw 'Timed out waiting for Codex to exit.' }
+}
 
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $runtime.app_exe

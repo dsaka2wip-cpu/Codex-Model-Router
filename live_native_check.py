@@ -28,7 +28,9 @@ def run():
         result["plan_type"] = acct.get("planType")
         if result["auth_type"] != "chatgpt":
             raise RuntimeError("chatgpt_auth_required")
-        client.call("model/list", {"includeHidden": False})
+        catalog_rows = client.call("model/list", {"includeHidden": False}).get("data", [])
+        catalog = {row["model"]: {item["reasoningEffort"] for item in row.get("supportedReasoningEfforts", [])}
+                   for row in catalog_rows}
         thread = client.call("thread/start", {
             "cwd": str(cwd), "ephemeral": True, "model": "gpt-6-astra",
             "config": {"model_reasoning_effort": "ultra"},
@@ -37,9 +39,9 @@ def run():
         })
         thread_id = thread["thread"]["id"]
         cases = [
-            ("FAST", "What is JSON? Reply in one sentence. Remember code maple-62.", "gpt-5.6-luna", "low", False),
-            ("NORMAL", "Implement a Python function token() returning the code from my previous message. Return code only; do not run commands.", "gpt-5.6-sol", "medium", False),
-            ("DEEP_PLAN", "Design a distributed system architecture with two services and one queue. Give only two short plan steps. Do not edit files or use tools.", "gpt-6-astra", "high", True),
+            ("CLASSIFIED_SHORT", "What is JSON? Reply in one sentence. Remember code maple-62.", None, None, False),
+            ("CLASSIFIED_CONTEXT", "Implement a Python function token() returning the code from my previous message. Return code only; do not run commands.", None, None, False),
+            ("CLASSIFIED_PLAN", "Design a distributed system architecture with two services and one queue. Give only two short plan steps. Do not edit files or use tools.", None, None, True),
             ("GUI_PASSTHROUGH", "[router off]\nWhat is JSON? Reply with OK only.", "gpt-5.6-sol", "high", False),
         ]
         if PLAN_ONLY:
@@ -62,7 +64,8 @@ def run():
             turn_id = response["turn"]["id"]
             item = {"case": label, "expected_model": expected_model, "expected_effort": expected_effort,
                     "settings": [], "stream_deltas": 0, "plan_deltas": 0, "token_usage_updates": 0,
-                    "footer_present": False, "status": None, "mode": "plan" if plan else "default"}
+                    "footer_present": False, "classifier_footer_present": False,
+                    "status": None, "mode": "plan" if plan else "default"}
             text = ""
             deadline = time.monotonic() + 180
             while time.monotonic() < deadline:
@@ -97,12 +100,19 @@ def run():
                 elif method == "turn/completed" and (data.get("turn") or {}).get("id") == turn_id:
                     item["status"] = data["turn"]["status"]
                     break
-            item["remembered"] = "maple-62" in text if label == "NORMAL" else None
-            item["footer_present"] = "Router · 이번 턴:" in text
-            item["actual_settings_match"] = any(
-                s["model"] == expected_model and s["effort"] == expected_effort
-                and s["nested_model"] == expected_model and s["nested_effort"] == expected_effort
-                and s["mode"] == item["mode"] for s in item["settings"])
+            item["remembered"] = "maple-62" in text if label == "CLASSIFIED_CONTEXT" else None
+            item["footer_present"] = "Router · 판별:" in text
+            item["classifier_footer_present"] = "Router · 판별: Sol / Medium" in text
+            if expected_model:
+                item["actual_settings_match"] = any(
+                    s["model"] == expected_model and s["effort"] == expected_effort
+                    and s["nested_model"] == expected_model and s["nested_effort"] == expected_effort
+                    and s["mode"] == item["mode"] for s in item["settings"])
+            else:
+                item["actual_settings_match"] = any(
+                    s["model"] in catalog and s["effort"] in catalog[s["model"]]
+                    and s["nested_model"] == s["model"] and s["nested_effort"] == s["effort"]
+                    and s["mode"] == item["mode"] for s in item["settings"])
             result["turns"].append(item)
             print(json.dumps(item), flush=True)
             REPORT.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -110,7 +120,9 @@ def run():
                 break
         result["same_thread"] = len(result["turns"]) == len(cases)
         result["passed"] = result["same_thread"] and all(t["status"] == "completed" and t["actual_settings_match"]
-            and t["stream_deltas"] > 0 and t["footer_present"] for t in result["turns"]) \
+            and t["stream_deltas"] > 0 and t["footer_present"]
+            and (t["case"] == "GUI_PASSTHROUGH" or t["classifier_footer_present"])
+            for t in result["turns"]) \
             and (PLAN_ONLY or result["turns"][1]["remembered"])
     REPORT.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({"passed": result["passed"], "same_thread": result["same_thread"], "gui_verified": False}), flush=True)

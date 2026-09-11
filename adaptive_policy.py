@@ -1,4 +1,4 @@
-"""Adaptive native-GUI policy; observes the wire, never calls a model or edits history."""
+"""Adaptive native-GUI policy with a hidden, fixed-model routing classifier."""
 import copy
 import hashlib
 import json
@@ -20,15 +20,20 @@ TIERS = {
 }
 ROLE_TIER = {"lookup": "FAST", "implementation": "NORMAL",
              "critical_review": "DEEP", "hard_problem": "DEEP"}
-DEFAULT = {"enabled": True, "model": "auto", "effort": "auto", "tiers": TIERS}
-MODEL_LABELS = {"gpt-5.6-luna": "Luna", "gpt-5.6-sol": "Sol", "gpt-6-astra": "Astra"}
+DEFAULT = {"enabled": True, "model": "auto", "effort": "auto", "tiers": TIERS,
+           "classifier": {"model": "gpt-5.6-sol", "effort": "medium"}}
+MODEL_LABELS = {"gpt-5.6-luna": "Luna", "gpt-5.6-terra": "Terra",
+                "gpt-5.6-sol": "Sol", "gpt-6-astra": "Astra"}
 # OpenAI Work/Codex token-based rate-card ratios: input, cached input, output.
 CREDIT_RATES = {"gpt-5.6-luna": (5.0, 0.5, 30.0), "gpt-5.6-sol": (100.0, 10.0, 500.0),
-                "gpt-6-astra": (250.0, 25.0, 1250.0)}
+                "gpt-5.6-terra": (50.0, 5.0, 300.0), "gpt-6-astra": (250.0, 25.0, 1250.0)}
 # No fixed public effort multiplier exists. Only the Astra/Ultra counterfactual reasoning size uses this heuristic.
 EFFORT_REASONING_RATIO = {"none": 0.20, "minimal": 0.30, "low": 0.60, "medium": 0.75,
                           "high": 0.90, "xhigh": 0.95, "max": 1.00, "ultra": 1.00}
-AVERAGE_MESSAGE_CREDITS = {"gpt-5.6-luna": 1.0, "gpt-5.6-sol": 11.0, "gpt-6-astra": 16.0}
+AVERAGE_MESSAGE_CREDITS = {"gpt-5.6-luna": 1.0, "gpt-5.6-terra": 5.0,
+                           "gpt-5.6-sol": 11.0, "gpt-6-astra": 16.0}
+EFFORT_RANK = {name: rank for rank, name in enumerate(
+    ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))}
 
 
 def rpc_id(value):
@@ -37,6 +42,53 @@ def rpc_id(value):
 
 def safe_model(value):
     return value if isinstance(value, str) and value in set(ALIASES.values()) | {"gpt-5.5", "gpt-5.3-codex-spark"} else "other"
+
+
+def tier_for_selection(model, effort):
+    rank = EFFORT_RANK.get(effort, 0)
+    if model == "gpt-5.6-luna" and rank <= EFFORT_RANK["medium"]:
+        return "FAST"
+    if (model == "gpt-6-astra"
+            or model == "gpt-5.6-sol" and rank >= EFFORT_RANK["high"]
+            or model == "gpt-5.6-terra" and rank >= EFFORT_RANK["xhigh"]):
+        return "DEEP"
+    return "NORMAL"
+
+
+def route_for_selection(model, effort):
+    tier = tier_for_selection(model, effort)
+    if model == "gpt-5.6-luna":
+        role = "lookup"
+    elif model == "gpt-6-astra":
+        role = "hard_problem"
+    elif model == "gpt-5.6-sol" and EFFORT_RANK.get(effort, 0) >= EFFORT_RANK["high"]:
+        role = "critical_review"
+    else:
+        role = "implementation"
+    return {"role": role, "model": model, "effort": effort, "reason": "LLM classifier",
+            "explicit": False, "explicit_model": False, "explicit_effort": False}, tier
+
+
+def add_subagent_plan(params, routes):
+    """Add trusted route metadata without copying classifier-authored prose."""
+    if not routes:
+        return False
+    collaboration = params.get("collaborationMode")
+    settings = collaboration.get("settings") if isinstance(collaboration, dict) else None
+    if not isinstance(settings, dict):
+        return False
+    lines = [
+        "Adaptive Router subagent plan (fixed Sol/medium classifier):",
+        "Create these independent lanes promptly and run them in parallel when still useful.",
+        "Derive each concrete task from the user's request; do not delegate overlapping writes.",
+        "Use collaboration.spawn_agent with fork_turns=none and the exact model/effort below.",
+    ]
+    for index, item in enumerate(routes, 1):
+        lines.append(f"{index}. [codex-route:{item['role']}] {item['model']} / {item['effort']}")
+    lines.append("Each child must stay bounded, must not spawn children, and must return a concise result.")
+    previous = settings.get("developer_instructions")
+    settings["developer_instructions"] = ((previous.rstrip() + "\n\n") if isinstance(previous, str) and previous else "") + "\n".join(lines)
+    return True
 
 
 def selection(params, fallback=None):
@@ -95,13 +147,18 @@ class AdaptivePolicy:
         self.turns = OrderedDict()
         self.catalog = {}
         self.auth = None
+        self.classifier = None
         self.audit("bridge_started")
+
+    def set_classifier(self, callback):
+        self.classifier = callback
 
     def audit(self, event, thread_id=None, **fields):
         """Closed allowlist: no prompt, token, path, command, error text or raw ID."""
         if event not in {"bridge_started", "policy_error", "config_error", "control_error",
                          "passthrough", "route", "settings", "turn_completed", "rpc_error",
-                         "stream", "approval", "file_change", "model_rerouted", "auth", "footer"}:
+                         "stream", "approval", "file_change", "model_rerouted", "auth", "footer",
+                         "classifier", "classifier_fallback"}:
             return
         record = {"at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), "event": event}
         if isinstance(thread_id, str):
@@ -119,16 +176,25 @@ class AdaptivePolicy:
                 record[key] = value
             elif key == "reason" and value in {"disabled", "not_ready", "no_text", "unknown_mode",
                       "unsupported_selection", "invalid_control", "gui", "custom_provider",
-                      "background", "invalid_packet"}:
+                      "background", "invalid_packet", "unavailable", "failed"}:
                 record[key] = value
             elif key == "auth" and value in ("chatgpt", "chatgptAuthTokens", "apiKey", "other"):
                 record[key] = value
             elif key in ("count", "code") and type(value) is int:
                 record[key] = value
-            elif key in ("turns", "luna", "sol", "astra", "input_tokens", "cached_tokens",
+            elif key in ("turns", "luna", "terra", "sol", "astra", "input_tokens", "cached_tokens",
                          "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent") and type(value) is int:
                 record[key] = value
             elif key == "usage_source" and value in ("total_delta", "last", "equal_turn"):
+                record[key] = value
+            elif key == "stage" and value in ("prepare", "fork", "read", "turn_start", "turn_wait", "result", "unknown"):
+                record[key] = value
+            elif key == "context_mode" and value in ("fork", "read"):
+                record[key] = value
+            elif key == "error_kind" and value in ("invalid_params", "not_found", "busy", "permission",
+                                                     "unsupported", "other"):
+                record[key] = value
+            elif key == "rpc_code" and type(value) in (str, int):
                 record[key] = value
         try:
             with self.lock:
@@ -149,7 +215,7 @@ class AdaptivePolicy:
             self.threads[thread_id] = {
                 "controls": {}, "previous": None, "settings": {}, "stream": 0,
                 "active_turn": None, "usage_total": None, "last_footer": None,
-                "stats": {"turns": 0, "models": {"Luna": 0, "Sol": 0, "Astra": 0},
+                "stats": {"turns": 0, "models": {"Luna": 0, "Terra": 0, "Sol": 0, "Astra": 0},
                           "actual_units": 0.0, "baseline_units": 0.0},
             }
         self.threads.move_to_end(thread_id)
@@ -157,11 +223,14 @@ class AdaptivePolicy:
 
     def _config(self):
         if not self.path.exists():
-            return {**DEFAULT, "enabled": False}
+            merged = copy.deepcopy(DEFAULT)
+            merged["enabled"] = False
+            return merged
         config = json.loads(self.path.read_text(encoding="utf-8-sig"))
         if not isinstance(config, dict) or set(config) - set(DEFAULT):
             raise ValueError("invalid_config")
-        merged = {**DEFAULT, **config}
+        merged = copy.deepcopy(DEFAULT)
+        merged.update(config)
         if type(merged["enabled"]) is not bool:
             raise ValueError("invalid_config")
         for axis in ("model", "effort"):
@@ -179,6 +248,11 @@ class AdaptivePolicy:
                 raise ValueError("invalid_config")
             if not isinstance(row["model"], str) or row["effort"] not in EFFORTS:
                 raise ValueError("invalid_config")
+        classifier = merged["classifier"]
+        if (not isinstance(classifier, dict) or set(classifier) != {"model", "effort"}
+                or not isinstance(classifier["model"], str) or classifier["effort"] not in EFFORTS):
+            raise ValueError("invalid_config")
+        classifier["model"] = ALIASES.get(classifier["model"], classifier["model"])
         return merged
 
     def on_client(self, message):
@@ -236,9 +310,36 @@ class AdaptivePolicy:
                         self.pending[key].update(tier="GUI", model=old_model, effort=old_effort)
                     self.audit("passthrough", thread_id, reason="gui", model=old_model, effort=old_effort)
                     return message
-                route = choose_route(prose, state["previous"])
-                tier = settings.get("tier", ROLE_TIER[route["role"]])
-                preferred = config["tiers"][tier]
+                fallback = choose_route(prose, state["previous"])
+                decision = None
+                needs_classifier = (settings.get("tier") is None and self.classifier is not None
+                                    and any(settings[axis] == "auto" and not fallback["explicit_" + axis]
+                                            for axis in ("model", "effort")))
+                if needs_classifier:
+                    try:
+                        # Let the stdout pump process unrelated GUI events while the hidden turn runs.
+                        self.lock.release()
+                        try:
+                            decision = self.classifier(thread_id, prose, config["classifier"],
+                                                       copy.deepcopy(self.catalog), copy.deepcopy(inputs))
+                        finally:
+                            self.lock.acquire()
+                        route, tier = route_for_selection(decision["model"], decision["effort"])
+                        self.audit("classifier", thread_id, model=decision["model"], effort=decision["effort"],
+                                   count=len(decision.get("subagents", [])),
+                                   context_mode=decision.get("context_mode"))
+                    except Exception as error:
+                        decision = None
+                        self.audit("classifier_fallback", thread_id, reason="failed",
+                                   stage=getattr(error, "stage", "unknown"),
+                                   rpc_code=getattr(error, "rpc_code", None),
+                                   error_kind=getattr(error, "error_kind", None))
+                if decision is None:
+                    route = fallback
+                    tier = settings.get("tier", ROLE_TIER[route["role"]])
+                    preferred = config["tiers"][tier]
+                else:
+                    preferred = decision
                 chosen = {}
                 for axis, old in (("model", old_model), ("effort", old_effort)):
                     selector = settings[axis]
@@ -252,6 +353,8 @@ class AdaptivePolicy:
                 if not entry or chosen["effort"] not in entry["efforts"]:
                     self.audit("passthrough", thread_id, reason="unsupported_selection")
                     return message
+                if settings.get("tier") is None:
+                    tier = tier_for_selection(chosen["model"], chosen["effort"])
                 updated = copy.deepcopy(message)
                 target = updated["params"]
                 nested = target.get("collaborationMode")
@@ -265,8 +368,13 @@ class AdaptivePolicy:
                             target[axis] = chosen[axis]
                     else:
                         target[axis] = chosen[axis]
+                if decision is not None:
+                    add_subagent_plan(target, decision.get("subagents", []))
                 self.pending[key].update(previous=state["previous"], controls=state["controls"].copy(),
                                          route=route, tier=tier, model=chosen["model"], effort=chosen["effort"],
+                                         classifier=(decision and {"model": config["classifier"]["model"],
+                                                                  "effort": config["classifier"]["effort"],
+                                                                  "usage": decision.get("usage")}),
                                          new_controls={k: v for k, v in control.items() if k != "tier"})
                 # Commit policy state only after the backend accepts turn/start.
                 self.audit("route", thread_id, tier=tier, model=chosen["model"],
@@ -304,6 +412,21 @@ class AdaptivePolicy:
     def _estimate_units(turn):
         usage = turn.get("usage")
         model, effort = turn["model"], turn["effort"]
+        classifier_units = 0.0
+        classifier = turn.get("classifier")
+        if classifier:
+            classifier_usage = classifier.get("usage")
+            values = ([classifier_usage.get(k) for k in
+                       ("inputTokens", "cachedInputTokens", "outputTokens")]
+                      if isinstance(classifier_usage, dict) else [])
+            if len(values) == 3 and all(type(x) is int and x >= 0 for x in values):
+                input_tokens, cached, output = values
+                rate_in, rate_cached, rate_out = CREDIT_RATES[classifier["model"]]
+                classifier_units = (max(0, input_tokens - cached) * rate_in
+                                    + cached * rate_cached + output * rate_out) / 1_000_000
+            else:
+                classifier_units = (AVERAGE_MESSAGE_CREDITS[classifier["model"]]
+                                    * EFFORT_REASONING_RATIO.get(classifier["effort"], 1.0))
         if isinstance(usage, dict):
             values = [usage.get(k) for k in ("inputTokens", "cachedInputTokens", "outputTokens",
                                                "reasoningOutputTokens")]
@@ -313,16 +436,17 @@ class AdaptivePolicy:
                 write = write if type(write) is int and write > 0 else 0
                 uncached = max(0, input_tokens - cached - write)
                 rate_in, rate_cached, rate_out = CREDIT_RATES.get(model, CREDIT_RATES["gpt-6-astra"])
-                actual = uncached * rate_in + cached * rate_cached + write * rate_in * 1.25 + output * rate_out
+                actual = ((uncached * rate_in + cached * rate_cached + write * rate_in * 1.25
+                           + output * rate_out) / 1_000_000 + classifier_units)
                 ratio = EFFORT_REASONING_RATIO.get(effort, 1.0)
                 baseline_output = max(0, output - reasoning) + reasoning / ratio
                 astra_in, astra_cached, astra_out = CREDIT_RATES["gpt-6-astra"]
                 baseline = (uncached * astra_in + cached * astra_cached + write * astra_in * 1.25
-                            + baseline_output * astra_out)
+                            + baseline_output * astra_out) / 1_000_000
                 if baseline > 0:
                     return actual, baseline
         ratio = EFFORT_REASONING_RATIO.get(effort, 1.0)
-        return AVERAGE_MESSAGE_CREDITS.get(model, 16.0) * ratio, 16.0
+        return AVERAGE_MESSAGE_CREDITS.get(model, 16.0) * ratio + classifier_units, 16.0
 
     def _footer_messages(self, message, thread_id, turn_id, item):
         turn = self.turns.get(turn_id)
@@ -339,16 +463,20 @@ class AdaptivePolicy:
         stats["actual_units"] += actual_units
         stats["baseline_units"] += baseline_units
         saved = 100 * (1 - stats["actual_units"] / stats["baseline_units"])
-        current = f'{turn["tier"]} → {label} / {turn["effort"].capitalize()}'
+        current = f'{turn["tier"]}: {label} / {turn["effort"].capitalize()}'
         previous = state["last_footer"] or "없음"
         counts = stats["models"]
-        footer = (f'Router · 이번 턴: {current} · 직전 턴: {previous}\n'
-                  f'세션 {stats["turns"]}턴 · Luna {counts["Luna"]} / Sol {counts["Sol"]} / '
+        classifier = turn.get("classifier")
+        classifier_label = (f'{MODEL_LABELS.get(classifier["model"], classifier["model"])} / '
+                            f'{classifier["effort"].capitalize()}' if classifier else "로컬/수동")
+        footer = (f'Router · 판별: {classifier_label} · 이번 턴: {current} · 직전 턴: {previous}\n'
+                  f'세션 {stats["turns"]}턴 · Luna {counts["Luna"]} / Terra {counts["Terra"]} / '
+                  f'Sol {counts["Sol"]} / '
                   f'Astra {counts["Astra"]} · 사용량 절감 추정 {saved:.0f}%')
         usage = usage if isinstance(usage, dict) else {}
         self.audit("footer", thread_id, tier=turn["tier"] if turn["tier"] in TIERS else None,
                    model=turn["model"], effort=turn["effort"], turns=stats["turns"],
-                   luna=counts["Luna"], sol=counts["Sol"], astra=counts["Astra"],
+                   luna=counts["Luna"], terra=counts["Terra"], sol=counts["Sol"], astra=counts["Astra"],
                    input_tokens=usage.get("inputTokens"), cached_tokens=usage.get("cachedInputTokens"),
                    output_tokens=usage.get("outputTokens"), reasoning_tokens=usage.get("reasoningOutputTokens"),
                    total_tokens=usage.get("totalTokens"), saved_percent=round(saved),
@@ -403,6 +531,7 @@ class AdaptivePolicy:
                             self.turns[turn_id] = {
                                 "thread": thread_id, "tier": request["tier"], "model": request["model"],
                                 "effort": request["effort"], "usage_start": copy.deepcopy(state["usage_total"]),
+                                "classifier": request.get("classifier"),
                             }
                             state["active_turn"] = turn_id
                     state["stream"] = 0

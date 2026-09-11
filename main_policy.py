@@ -1,4 +1,4 @@
-"""Local main-turn selection. No model/API calls and no prompt truncation."""
+"""Local fallback selection used when the hidden LLM classifier is unavailable."""
 import re
 from router import ROUTES
 
@@ -16,8 +16,8 @@ REASONS = {
 def choose_route(prompt, previous=None, model="auto", effort="auto", catalog=None):
     """Conservative rules, with sticky context for dependent follow-ups.
 
-    ponytail: local heuristics cannot understand every task; use the visible
-    manual override and evaluate misroutes before adding a paid classifier.
+    ponytail: local heuristics cannot understand every task; the native router
+    normally uses its hidden classifier and keeps this only as a fail-open path.
     The complete original prompt is always sent to Codex unchanged.
     """
     if not isinstance(prompt, str) or not prompt.strip():

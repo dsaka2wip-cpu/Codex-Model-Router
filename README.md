@@ -10,54 +10,66 @@
 <p align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows_11-tested-0078D4?logo=windows11&logoColor=white">
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
-  <img alt="Classifier tokens" src="https://img.shields.io/badge/classifier_tokens-0-22C55E">
+  <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-48_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-54_passed-7C3AED">
 </p>
 
 ---
 
 # Codex Model Router
 
-**Codex Model Router는 Codex Desktop용 로컬 토큰 절약기입니다.** 질문이 들어올 때마다 로컬 규칙으로 난도를 판정하고, 쉬운 일은 Luna, 보통 일은 Sol, 어려운 일은 Astra로 보냅니다. 분류를 위해 다른 LLM을 부르지 않으므로 **분류 토큰은 0**입니다.
+**Codex Model Router는 Codex Desktop용 적응형 토큰 절약기입니다.** 질문이 들어오면 고정된 **GPT-5.6 Sol / medium 판별기**가 기존 대화 문맥과 새 요청을 먼저 읽고, 설치된 모델 카탈로그 안에서 실제 답변의 model과 reasoning effort를 각각 고릅니다. 병렬화할 가치가 있는 작업은 최대 3개의 하위 작업 경로도 함께 정합니다.
 
 ```text
-“JSON이 뭐야? 한 문장으로.”          → FAST   → Luna  / low
-“이 함수 구현하고 테스트해.”         → NORMAL → Sol   / medium
-“인증 구조를 위협 모델과 함께 설계해.” → DEEP   → Astra / high
+“값 하나를 정확히 추출해.”           → Luna  / high
+“이 함수 구현하고 테스트해.”         → Terra / medium
+“복잡한 인증 장애의 원인을 추적해.”    → Sol   / high
+“핵심 시스템을 실패 비용까지 설계해.”  → Astra / ultra
 ```
 
 > **목표:** 모든 질문을 최고 모델로 시작하는 낭비를 줄이면서, 어려운 작업에는 강한 모델을 남겨 두는 것.
 
 ## 왜 토큰을 크게 아낄 수 있나
 
-모든 턴을 Astra/Ultra로 보내면 한 문장 설명, 파일명 찾기, 간단한 수정도 가장 비싼 경로를 탑니다. Router는 실제 작업을 시작하기 전에 무료 로컬 분류를 거칩니다.
+모든 턴을 Astra/Ultra로 보내면 한 문장 설명, 파일명 찾기, 간단한 수정도 가장 비싼 경로를 탑니다. Router는 실제 작업 전에 Sol/medium으로 짧은 판별 턴을 한 번 실행하고, 더 저렴한 모델로 충분한 요청만 낮춥니다.
 
-| 경로 | 쓰임 | 모델 / effort | 공개 token rate 기준 Astra 대비* |
+| 모델 | 주 용도 | 선택 가능한 effort | 공개 token rate 기준 Astra 대비* |
 |---|---|---|---:|
-| ⚡ **FAST** | 짧은 설명·조회·추출·정리 | Luna / low | input 약 **98%↓**, output 약 **97.6%↓** |
-| 🛠️ **NORMAL** | 일반 질문·구현·테스트 | Sol / medium | input/output 약 **60%↓** |
-| 🧠 **DEEP** | 복잡한 설계·깊은 디버깅·중요 검토 | Astra / high | 품질 우선 |
+| ⚡ **Luna** | 좁고 명확한 조회·추출·반복 작업 | low, medium, high, xhigh, max (**5**) | input 약 **98%↓**, output 약 **97.6%↓** |
+| 🔧 **Terra** | 일상적인 제작·분석·범위가 분명한 구현 | low, medium, high, xhigh, max, ultra (**6**) | input **80%↓**, output **76%↓** |
+| 🛠️ **Sol** | 모호하거나 여러 단계인 구현·연구·보안 | low, medium, high, xhigh, max, ultra (**6**) | input/output 약 **60%↓** |
+| 🧠 **Astra** | 가장 어려운 설계·깊은 디버깅·고비용 실패 검토 | low, medium, high, xhigh, max, ultra (**6**) | 품질 우선 |
 
-\* 모델별 공개 token-based credit rate의 단순 비율입니다. 실제 절감률은 캐시, reasoning token, 대화 길이, 오분류와 재작업에 따라 달라집니다. 이 프로젝트는 절감액을 보장하지 않으며 GUI 푸터에 항상 **추정**으로 표시합니다.
+\* 표는 답변 모델 자체의 공개 token-based credit rate를 단순 비교한 값입니다. 실제 푸터 계산에는 **Sol/medium 판별 턴의 사용량도 포함**합니다. 실제 절감률은 캐시, reasoning token, 대화 길이, 판별과 재작업에 따라 달라지며 절감액을 보장하지 않습니다.
 
-**절약 포인트는 세 가지입니다.**
+**설계의 핵심은 세 가지입니다.**
 
-- 분류용 API 호출 **0회**
-- 자동 경로에서 Ultra 사용 **0회**
+- 판별기는 매번 동일한 **Sol / medium**이라 비용과 품질 기준이 일정
+- 답변 모델과 effort는 독립 선택 — 현재 확인된 **23개 조합** 전체를 실제 `model/list` 카탈로그에서 동적으로 사용
+- `FAST/NORMAL/DEEP`는 표시·수동 강제용 요약 라벨이며, LLM 판별기는 이 등급을 거치지 않고 model·effort를 바로 선택
 - 별도 API 키·별도 API 과금 **없음** — 기존 ChatGPT Pro 로그인을 그대로 사용
+
+판별 때문에 매 질문마다 모델 호출이 한 번 추가되므로 응답 시작은 느려지고 사용량도 생깁니다. 대신 단순 키워드 규칙보다 문맥과 실패 위험을 잘 판단해 첫 결과의 품질을 높이는 쪽을 택했습니다.
 
 ## Codex GUI를 그대로 씁니다
 
 ```mermaid
 flowchart LR
     A[Codex Desktop GUI] -->|stdio / JSONL| B[Local Model Router]
-    B -->|turn/start만 조정| C[기존 Codex App Server]
+    B -->|숨은 ephemeral fork| E[Sol / medium 판별]
+    E -->|answer + subagent routes| B
+    B -->|원래 turn/start 조정| C[기존 Codex App Server]
     C --> D[기존 ChatGPT Pro 인증]
-    B -. 로컬 규칙 .-> E{FAST / NORMAL / DEEP}
 ```
 
-설치된 Codex 앱 파일을 패치하지 않습니다. Router는 실제 `codex.exe app-server`를 자식 프로세스로 실행하고 JSONL을 양방향 중계합니다. 로그인, thread, streaming, tool call, 승인, 파일 변경은 기존 App Server가 계속 처리합니다.
+설치된 Codex 앱 파일을 패치하지 않습니다. Router는 실제 `codex.exe app-server`를 자식 프로세스로 실행하고 JSONL을 양방향 중계합니다. 판별은 원래 thread의 문맥을 상속하는 메모리 내 fork에서 실행되고 완료 즉시 삭제됩니다. 현재 작업의 writer lock 때문에 fork가 거부되면, 같은 App Server에서 최근 사용자·최종 답변 텍스트만 읽어 격리된 ephemeral 판별 thread에 전달합니다. 두 경로 모두 읽기 전용·네트워크 차단·승인 없음으로 실행합니다. 로그인, 원래 thread, streaming, tool call, 승인, 파일 변경은 기존 App Server가 계속 처리합니다.
+
+## 하위 작업도 따로 맞춥니다
+
+같은 Sol/medium 판별 결과에는 독립 하위 작업 **0~3개**와 각 작업의 model·effort가 포함됩니다. 메인 에이전트는 계획이 실제로 독립적일 때 `fork_turns=none`으로 동시에 실행합니다. Luna/high, Terra/medium, Sol/xhigh, Astra/ultra처럼 하위 작업마다 서로 다른 조합을 쓸 수 있습니다.
+
+단순 확인이나 순차 작업에는 하위 에이전트를 만들지 않습니다. 하위 에이전트는 별도 스레드에서 병렬로 도는 작업이므로 완료 시간과 메인 문맥 오염을 줄일 수 있지만, 각각 토큰을 사용해 단일 에이전트 실행보다 총토큰은 늘 수 있습니다. 이 기능은 토큰 절약보다 **처리 시간과 결과 품질**을 위한 선택적 병렬화입니다.
 
 ## 3분 시작
 
@@ -84,7 +96,7 @@ Set-Location .\Codex-Model-Router
 
 ### 3. Codex 연결
 
-Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd`**를 더블클릭하거나 실행합니다.
+Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd` (Codex가 실행 중이면 완전히 종료될 때까지 기다렸다가 새 Router로 자동 실행)**를 더블클릭하거나 실행합니다.
 
 ```powershell
 .\Start-AdaptiveCodex.ps1
@@ -107,11 +119,11 @@ Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거�
 최종 답변과 Plan 결과 끝에 로컬 푸터를 붙입니다.
 
 ```text
-Router · 이번 턴: FAST → Luna / Low · 직전 턴: NORMAL → Sol / Medium
-세션 17턴 · Luna 9 / Sol 6 / Astra 2 · 사용량 절감 추정 63%
+Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
+세션 17턴 · Luna 7 / Terra 4 / Sol 4 / Astra 2 · 사용량 절감 추정 51%
 ```
 
-집계는 현재 Router 프로세스의 해당 thread 기준입니다. 실제 token usage가 있으면 공개 credit rate로 계산하고, 없으면 공개 평균 local message 값을 사용합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
+집계는 현재 Router 프로세스의 해당 thread 기준입니다. 답변과 판별의 실제 token usage가 있으면 공개 credit rate로 계산하고, 없으면 평균값 기반 추정치를 사용합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
 
 ## 자동보다 내 선택이 우선
 
@@ -141,15 +153,20 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 48개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 54개 통과 |
+| 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
+| Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
+| Sol/medium 하위 작업 계획·모델/effort 다양화 | ✅ 정책·프로토콜 검사 통과 |
 | 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
+| 실제 GUI의 23조합 LLM 판별 → Sol/high | ✅ 요청 route와 서버 settings 일치 |
 | 독립 App Server에서 Luna → Sol, 같은 thread 문맥 | ✅ 확인 |
-| Plan nested settings와 streaming | ✅ 확인 |
+| Plan nested settings와 결과 전달 | ✅ 실제 GUI에서 Sol/high route·nested settings·완료 결과 확인 |
 | 명시적 GUI 값 보존 (`[router off]`) | ✅ 확인 |
 | tool/command 승인 흐름 | ✅ 현재 작업에서 정상 |
-| 새 푸터의 실제 GUI 렌더링 | ⏳ 오프라인 검증 완료, GUI 재시작 검증 대기 |
+| 새 푸터의 실제 GUI 렌더링 | ✅ `DEEP: Sol / High` 형식과 사용량 추정 표시 확인 |
+| Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
 | 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
@@ -158,16 +175,17 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 ## 설정
 
-`state/adaptive-config.json`에서 모델과 effort를 독립적으로 설정할 수 있습니다. 값은 턴마다 다시 읽으며 파일이 없거나 잘못되면 원래 요청을 보냅니다.
+`state/adaptive-config.json`에서 판별 모델과 답변 모델·effort를 독립적으로 설정할 수 있습니다. 값은 턴마다 다시 읽으며 파일이 없거나 잘못되면 원래 요청을 보냅니다.
 
 ```json
 {
   "model": "auto",
   "effort": "auto",
+  "classifier": { "model": "gpt-5.6-sol", "effort": "medium" },
   "tiers": {
-    "fast":   { "model": "gpt-5.6-luna", "effort": "low" },
-    "normal": { "model": "gpt-5.6-sol",  "effort": "medium" },
-    "deep":   { "model": "gpt-6-astra",  "effort": "high" }
+    "FAST":   { "model": "gpt-5.6-luna", "effort": "low" },
+    "NORMAL": { "model": "gpt-5.6-sol",  "effort": "medium" },
+    "DEEP":   { "model": "gpt-6-astra",  "effort": "high" }
   }
 }
 ```

@@ -2,4 +2,4 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-& (Join-Path $PSScriptRoot 'Start-AdaptiveCodex.ps1') -BypassRouter
+& (Join-Path $PSScriptRoot 'Start-AdaptiveCodex.ps1') -BypassRouter -WaitForExit

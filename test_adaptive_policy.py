@@ -9,9 +9,10 @@ from adaptive_policy import AdaptivePolicy, DEFAULT, controls
 
 CATALOG = [{"model": model, "supportedReasoningEfforts": [{"reasoningEffort": x} for x in efforts]}
            for model, efforts in (
-               ("gpt-5.6-luna", ["low", "medium", "high", "max"]),
-               ("gpt-5.6-sol", ["low", "medium", "high", "ultra"]),
-               ("gpt-6-astra", ["low", "medium", "high", "ultra"]))]
+               ("gpt-5.6-luna", ["low", "medium", "high", "xhigh", "max"]),
+               ("gpt-5.6-terra", ["low", "medium", "high", "xhigh", "max", "ultra"]),
+               ("gpt-5.6-sol", ["low", "medium", "high", "xhigh", "max", "ultra"]),
+               ("gpt-6-astra", ["low", "medium", "high", "xhigh", "max", "ultra"]))]
 
 
 class AdaptiveTests(unittest.TestCase):
@@ -61,6 +62,74 @@ class AdaptiveTests(unittest.TestCase):
             actual.append((routed["params"]["model"], routed["params"]["effort"]))
             self.accept(request)
         self.assertEqual(actual, [("gpt-5.6-luna", "low"), ("gpt-5.6-sol", "medium"), ("gpt-6-astra", "high")])
+
+    def test_classifier_can_choose_model_and_effort_independently(self):
+        decisions = iter([
+            {"model": "gpt-5.6-luna", "effort": "high", "subagents": [], "usage": None},
+            {"model": "gpt-5.6-terra", "effort": "max", "subagents": [], "usage": None},
+            {"model": "gpt-6-astra", "effort": "ultra", "subagents": [], "usage": None},
+        ])
+        self.policy.set_classifier(lambda *_args: next(decisions))
+        actual = []
+        for prompt in ("Carefully extract one value.", "Implement this bounded change.",
+                       "Resolve this exceptionally hard architecture conflict."):
+            request, routed = self.turn(prompt)
+            actual.append((routed["params"]["model"], routed["params"]["effort"]))
+            self.accept(request)
+        self.assertEqual(actual, [
+            ("gpt-5.6-luna", "high"),
+            ("gpt-5.6-terra", "max"),
+            ("gpt-6-astra", "ultra"),
+        ])
+
+    def test_all_23_live_catalog_pairs_are_accepted(self):
+        pairs = [(row["model"], effort["reasoningEffort"])
+                 for row in CATALOG for effort in row["supportedReasoningEfforts"]]
+        self.assertEqual(len(pairs), 23)
+        decisions = iter({"model": model, "effort": effort, "subagents": [], "usage": None}
+                         for model, effort in pairs)
+        self.policy.set_classifier(lambda *_args: next(decisions))
+        actual = []
+        for index in range(len(pairs)):
+            request, routed = self.turn(f"Case {index}")
+            actual.append((routed["params"]["model"], routed["params"]["effort"]))
+            self.accept(request)
+        self.assertEqual(actual, pairs)
+
+    def test_display_tier_is_recomputed_after_axis_override(self):
+        self.policy.set_classifier(lambda *_args: {
+            "model": "gpt-5.6-luna", "effort": "high", "subagents": [], "usage": None})
+        request, routed = self.turn("[router model=sol]\nCareful narrow task.")
+        pending = self.policy.pending[("int", request["id"])]
+        self.assertEqual((routed["params"]["model"], routed["params"]["effort"], pending["tier"]),
+                         ("gpt-5.6-sol", "high", "DEEP"))
+
+    def test_classifier_subagent_routes_are_injected_without_generated_task_text(self):
+        self.policy.set_classifier(lambda *_args: {
+            "model": "gpt-5.6-sol", "effort": "medium", "usage": None,
+            "subagents": [
+                {"role": "lookup", "model": "gpt-5.6-luna", "effort": "high"},
+                {"role": "critical_review", "model": "gpt-6-astra", "effort": "ultra"},
+            ],
+        })
+        collaboration = {"mode": "default", "settings": {"model": "gpt-5.6-sol",
+            "reasoning_effort": "medium", "developer_instructions": "Keep this."}}
+        _, routed = self.turn("Research and review these independent areas.",
+                              model=None, effort=None, collaborationMode=collaboration)
+        instructions = routed["params"]["collaborationMode"]["settings"]["developer_instructions"]
+        self.assertIn("Keep this.", instructions)
+        self.assertIn("[codex-route:lookup] gpt-5.6-luna / high", instructions)
+        self.assertIn("[codex-route:critical_review] gpt-6-astra / ultra", instructions)
+
+    def test_classifier_failure_uses_local_route(self):
+        def fail(*_args):
+            raise TimeoutError
+        self.policy.set_classifier(fail)
+        _, routed = self.turn("What is JSON?")
+        self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
+                         ("gpt-5.6-luna", "low"))
+        audit = "\n".join(path.read_text(encoding="utf-8") for path in self.policy.audit_dir.glob("*.jsonl"))
+        self.assertIn('"stage": "unknown"', audit)
 
     def test_independent_axes_and_user_control_no_provenance_guess(self):
         request, routed = self.turn("[router model=gui effort=low]\nImplement a calculator.")
@@ -139,8 +208,8 @@ class AdaptiveTests(unittest.TestCase):
             "turn": {"id": "turn-1", "status": "completed"}}})[:-1]
         self.assertEqual(completed, original)
         self.assertEqual(rows[0]["method"], "item/agentMessage/delta")
-        self.assertIn("이번 턴: FAST → Luna / Low", rows[0]["params"]["delta"])
-        self.assertIn("세션 1턴 · Luna 1 / Sol 0 / Astra 0", rows[1]["params"]["item"]["text"])
+        self.assertIn("이번 턴: FAST: Luna / Low", rows[0]["params"]["delta"])
+        self.assertIn("세션 1턴 · Luna 1 / Terra 0 / Sol 0 / Astra 0", rows[1]["params"]["item"]["text"])
         self.assertIn("사용량 절감 추정 98%", rows[1]["params"]["item"]["text"])
         self.assertIsNone(self.policy.on_server(completed))
 
@@ -160,9 +229,9 @@ class AdaptiveTests(unittest.TestCase):
         rows = self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
             "turn": {"id": "turn-2", "status": "completed"}}})[:-1]
         footer = rows[1]["params"]["item"]["text"]
-        self.assertIn("이번 턴: NORMAL → Sol / Medium", footer)
-        self.assertIn("직전 턴: FAST → Luna / Low", footer)
-        self.assertIn("세션 2턴 · Luna 1 / Sol 1 / Astra 0", footer)
+        self.assertIn("이번 턴: NORMAL: Sol / Medium", footer)
+        self.assertIn("직전 턴: FAST: Luna / Low", footer)
+        self.assertIn("세션 2턴 · Luna 1 / Terra 0 / Sol 1 / Astra 0", footer)
 
     def test_commentary_and_server_history_are_not_modified(self):
         request, _ = self.turn("Implement a calculator.")
@@ -184,7 +253,7 @@ class AdaptiveTests(unittest.TestCase):
         rows = self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
             "turn": {"id": "plan-turn", "status": "completed"}}})[:-1]
         self.assertEqual(rows[0]["method"], "item/plan/delta")
-        self.assertIn("DEEP → Astra / High", rows[1]["params"]["item"]["text"])
+        self.assertIn("DEEP: Astra / High", rows[1]["params"]["item"]["text"])
 
         off, routed = self.turn("[router off]\nWhat is JSON?", model="gpt-5.6-sol", effort="high")
         self.assertIs(off, routed)
@@ -194,7 +263,7 @@ class AdaptiveTests(unittest.TestCase):
                 "phase": "final_answer", "text": "OK"}}}), [])
         rows = self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
             "turn": {"id": "gui-turn", "status": "completed"}}})[:-1]
-        self.assertIn("GUI → Sol / High", rows[1]["params"]["item"]["text"])
+        self.assertIn("GUI: Sol / High", rows[1]["params"]["item"]["text"])
 
     def test_auth_catalog_unavailable_custom_provider_and_bad_combo_passthrough(self):
         self.policy.auth = None

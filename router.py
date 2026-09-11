@@ -24,9 +24,11 @@ extraction/formatting (Luna medium); implementation = call-flow analysis, bounde
 coding/UI/tests (Sol medium); critical_review = deep debugging, security, integrity
 or semantic evidence checks (Sol high); hard_problem = independent difficult
 architecture/requirements conflicts (Astra high); usually resolve design yourself.
-For automatic routing set the role's exact model and reasoning_effort explicitly
-when spawning (lookup gpt-5.6-luna/medium; implementation gpt-5.6-sol/medium;
-critical_review gpt-5.6-sol/high; hard_problem gpt-6-astra/high). The current V2
+If the current turn contains an Adaptive Router subagent plan, create its useful
+independent lanes promptly and in parallel, with the exact model and effort listed.
+Otherwise use the fallback pairs (lookup gpt-5.6-luna/medium; implementation
+gpt-5.6-sol/medium; critical_review gpt-5.6-sol/high; hard_problem
+gpt-6-astra/high). Always set both values explicitly when spawning. The current V2
 spawn path can bypass PreToolUse, so DO NOT rely on argument rewriting there.
 Avoid named agent profiles whose own model settings override these arguments.
 Use a fresh child
@@ -35,8 +37,10 @@ acceptance checks and desired return format. Never drop necessary source materia
 On tools with fork_turns explicitly use 'none' (or an appropriate partial fork);
 the hook NEVER converts a full-history fork. Explicit user model/effort wins: pass
 the requested arguments and omit the route marker. Unknown roles keep defaults.
-No classifier API, compulsory delegation, retry ladder, recursive fan-out or duplicate
-parent work. Diagnose environment/input errors before escalating model difficulty.
+Do not create children for mechanical or tightly sequential work. Prefer 2-3 parallel
+read-heavy, verification, research or independent implementation lanes when they save
+time or protect the main context. No classifier API in the subagent layer, retry ladder,
+recursive fan-out or duplicate parent work. Diagnose environment/input errors first.
 Keep required tests, evidence, progress updates and the current main model settings.
 """
 

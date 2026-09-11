@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from adaptive_policy import AdaptivePolicy, DEFAULT
-from stdio_router import _json_transform, run_bridge
+from stdio_router import _json_transform, RpcFailure, run_bridge
 
 
 class Policy:
@@ -82,6 +82,11 @@ class StdioRouterTests(unittest.TestCase):
         code, output, _ = self.bridge(raw, policy)
         self.assertEqual((code, output), (0, raw))
         self.assertEqual(policy.client, [])
+
+    def test_rpc_error_is_redacted_to_safe_category(self):
+        error = RpcFailure({"code": -32602, "message": "Invalid params containing secret details"})
+        self.assertEqual((error.rpc_code, error.error_kind), (-32602, "invalid_params"))
+        self.assertNotIn("secret", str(error))
 
     def test_server_transform_can_inject_footer_delta_before_completed_item(self):
         transform = _json_transform(FooterPolicy(), "server")
@@ -181,12 +186,12 @@ class StdioRouterTests(unittest.TestCase):
             requests = [
                 b'{"id":1,"method":"account/read","params":{}}\n',
                 b'{"id":"1","method":"model/list","params":{}}\n',
-                b'{"id":3,"method":"turn/start","params":{"threadId":"t","model":"gpt-6-astra","effort":"ultra","input":[{"type":"text","text":"What is JSON?"}]}}\n',
+                b'{"id":3,"method":"turn/start","params":{"threadId":"t","model":null,"effort":null,"input":[{"type":"text","text":"What is JSON?"}],"collaborationMode":{"mode":"default","settings":{"model":"gpt-6-astra","reasoning_effort":"ultra","developer_instructions":"base"}}}}\n',
             ]
             output = io.BytesIO()
             code = run_bridge(
                 sys.executable,
-                [str(Path(__file__).resolve()), "--fake-child", "--adaptive-sequence", "app-server"],
+                [str(Path(__file__).resolve()), "--fake-child", "--adaptive-sequence", "--fork-active-writer", "app-server"],
                 policy=policy,
                 stdin=SequencedInput(requests, [policy.auth_ready, policy.catalog_ready]),
                 stdout=output,
@@ -196,7 +201,13 @@ class StdioRouterTests(unittest.TestCase):
         received = response["result"]["received"]
         self.assertEqual(code, 0)
         self.assertEqual((received["params"]["model"], received["params"]["effort"]),
-                         ("gpt-5.6-luna", "low"))
+                         (None, None))
+        settings = received["params"]["collaborationMode"]["settings"]
+        self.assertEqual((settings["model"], settings["reasoning_effort"]),
+                         ("gpt-5.6-luna", "high"))
+        self.assertIn("[codex-route:lookup] gpt-5.6-luna / high",
+                      settings["developer_instructions"])
+        self.assertNotIn(b"classifier-thread", output.getvalue())
 
 
 def fake_child(argv):
@@ -208,13 +219,65 @@ def fake_child(argv):
                 result = {"account": {"type": "chatgpt"}}
             elif request["method"] == "model/list":
                 result = {"data": [
-                    {"model": "gpt-5.6-luna", "supportedReasoningEfforts": [{"reasoningEffort": "low"}]},
+                    {"model": "gpt-5.6-luna", "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low"}, {"reasoningEffort": "high"}]},
                     {"model": "gpt-5.6-sol", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]},
                     {"model": "gpt-6-astra", "supportedReasoningEfforts": [{"reasoningEffort": "high"}]},
                 ]}
+            elif request["method"] == "thread/fork":
+                if request["params"].get("excludeTurns") is not True:
+                    result = None
+                    error = {"code": -32600, "message": "paginated fork requires excludeTurns"}
+                    sys.stdout.buffer.write(json.dumps({"id": request["id"], "error": error}).encode() + b"\n")
+                    sys.stdout.buffer.flush()
+                    continue
+                if "--fork-active-writer" in argv:
+                    error = {"code": -32600, "message": "thread already has an active writer"}
+                    sys.stdout.buffer.write(json.dumps({"id": request["id"], "error": error}).encode() + b"\n")
+                    sys.stdout.buffer.flush()
+                    continue
+                result = {"thread": {"id": "classifier-thread", "ephemeral": True,
+                                      "forkedFromId": request["params"]["threadId"]}}
+            elif request["method"] == "thread/read":
+                result = {"thread": {"id": request["params"]["threadId"], "cwd": os.getcwd(), "turns": [{
+                    "items": [
+                        {"id": "u", "type": "userMessage", "content": [{"type": "text", "text": "Prior request"}]},
+                        {"id": "a", "type": "agentMessage", "phase": "final_answer", "text": "Prior answer"},
+                    ]}]}}
+            elif request["method"] == "thread/start" and "threadId" not in request["params"]:
+                result = {"thread": {"id": "classifier-thread", "ephemeral": True}}
+            elif request["method"] == "turn/start" and request["params"]["threadId"] == "classifier-thread":
+                result = {"turn": {"id": "classifier-turn", "status": "inProgress"}}
+            elif request["method"] == "thread/delete":
+                result = {}
             else:
                 result = {"received": request}
+            if request["method"] == "thread/fork":
+                sys.stdout.buffer.write(json.dumps({"method": "thread/settings/updated", "params": {
+                    "threadId": "other-thread", "threadSettings": {"model": "gpt-5.6-sol"}}}).encode() + b"\n")
             sys.stdout.buffer.write(json.dumps({"id": request["id"], "result": result}).encode() + b"\n")
+            if request["method"] == "thread/fork":
+                sys.stdout.buffer.write(json.dumps({"method": "thread/started", "params": {
+                    "thread": result["thread"]}}).encode() + b"\n")
+            elif request["method"] == "thread/start" and "threadId" not in request["params"]:
+                sys.stdout.buffer.write(json.dumps({"method": "thread/started", "params": {
+                    "thread": result["thread"]}}).encode() + b"\n")
+            elif request["method"] == "turn/start" and request["params"]["threadId"] == "classifier-thread":
+                sys.stdout.buffer.write(json.dumps({"method": "item/completed", "params": {
+                    "threadId": "classifier-thread", "turnId": "classifier-turn", "item": {
+                        "id": "classifier-answer", "type": "agentMessage", "phase": "final_answer",
+                        "text": '{"model":"gpt-5.6-luna","effort":"high","subagents":['
+                                '{"role":"lookup","model":"gpt-5.6-luna","effort":"high"}]}'}}}).encode() + b"\n")
+                sys.stdout.buffer.write(json.dumps({"method": "thread/tokenUsage/updated", "params": {
+                    "threadId": "classifier-thread", "turnId": "classifier-turn", "tokenUsage": {
+                        "last": {"inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,
+                                 "reasoningOutputTokens": 2, "totalTokens": 55}}}}).encode() + b"\n")
+                sys.stdout.buffer.write(json.dumps({"method": "turn/completed", "params": {
+                    "threadId": "classifier-thread", "turn": {
+                        "id": "classifier-turn", "status": "completed"}}}).encode() + b"\n")
+            elif request["method"] == "thread/delete":
+                sys.stdout.buffer.write(json.dumps({"method": "thread/deleted", "params": {
+                    "threadId": "classifier-thread"}}).encode() + b"\n")
             sys.stdout.buffer.flush()
         return exit_code
     data = sys.stdin.buffer.read()
