@@ -554,6 +554,28 @@ def _stop(process):
         process.wait()
 
 
+def _start_requested_eval():
+    raw = os.environ.get("CODEX_ROUTER_CLASSIFIER_EVAL")
+    try:
+        limit = int(raw) if raw is not None else 0
+    except ValueError:
+        return None
+    if not 1 <= limit <= 12:
+        return None
+    try:
+        return subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve().parent / "classifier_eval.py"),
+             "--run", "--limit", str(limit)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return None
+
+
 def run_bridge(executable, args, policy=None, *, stdin=None, stdout=None, stderr=None,
                max_line_bytes=MAX_LINE_BYTES, classifier_sidecar=True):
     """Run *executable* with original *args* and return its exact exit code."""
@@ -581,6 +603,7 @@ def run_bridge(executable, args, policy=None, *, stdin=None, stdout=None, stderr
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     use_policy = is_app_server and policy is not None
+    eval_process = _start_requested_eval() if use_policy else None
     sidecar_factory = None
     if use_policy and classifier_sidecar:
         from app_server import AppServer
@@ -638,6 +661,8 @@ def run_bridge(executable, args, policy=None, *, stdin=None, stdout=None, stderr
         _stop(process)
         raise
     finally:
+        if eval_process is not None:
+            _stop(eval_process)
         if classifier:
             classifier.close()
 

@@ -8,11 +8,13 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from adaptive_policy import AdaptivePolicy, DEFAULT
-from classifier_eval import score_case, summarize
+from classifier_eval import SnapshotClassifier, score_case, summarize
 from stdio_router import (RECENT_CONTEXT_CHARS, RECENT_TURNS, STATE_SUMMARY_CHARS,
-                          ClassifierFailure, InternalClassifier, _json_transform, RpcFailure, run_bridge)
+                          ClassifierFailure, InternalClassifier, _json_transform, _start_requested_eval,
+                          RpcFailure, run_bridge)
 
 
 class Policy:
@@ -96,6 +98,18 @@ class StdioRouterTests(unittest.TestCase):
         code, output, _ = self.bridge(raw, policy)
         self.assertEqual((code, output), (0, raw))
         self.assertEqual(policy.client, [])
+
+    def test_opt_in_eval_uses_bounded_existing_runner(self):
+        with patch.dict(os.environ, {"CODEX_ROUTER_CLASSIFIER_EVAL": "6"}), \
+                patch("stdio_router.subprocess.Popen") as popen:
+            process = _start_requested_eval()
+        self.assertIs(process, popen.return_value)
+        command = popen.call_args.args[0]
+        self.assertEqual(command[-3:], ["--run", "--limit", "6"])
+        self.assertTrue(command[1].endswith("classifier_eval.py"))
+        with patch.dict(os.environ, {"CODEX_ROUTER_CLASSIFIER_EVAL": "6"}), \
+                patch("stdio_router.subprocess.Popen", side_effect=OSError):
+            self.assertIsNone(_start_requested_eval())
 
     def test_rpc_error_is_redacted_to_safe_category(self):
         error = RpcFailure({"code": -32602, "message": "Invalid params containing secret details"})
@@ -233,6 +247,23 @@ class StdioRouterTests(unittest.TestCase):
         self.assertTrue(low["critical_underroute"])
         self.assertTrue(good["accepted"])
         self.assertEqual((report["critical_underroutes"], report["classifier_total_tokens"]), (1, 30))
+
+    def test_eval_classifier_replaces_discarded_sidecar(self):
+        class Sidecar:
+            process = None
+
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        first, replacement = Sidecar(), Sidecar()
+        classifier = SnapshotClassifier(first, {}, lambda: replacement)
+        self.assertIs(classifier._get_sidecar(), first)
+        classifier._discard_sidecar(first)
+        self.assertTrue(first.closed)
+        self.assertIs(classifier._get_sidecar(), replacement)
 
     def test_server_transform_can_inject_footer_delta_before_completed_item(self):
         transform = _json_transform(FooterPolicy(), "server")

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$BypassRouter,
+    [switch]$ClassifierEval,
     [switch]$CheckOnly,
     [switch]$WaitForExit,
     [switch]$LoadFunctionsOnly
@@ -62,6 +63,7 @@ $runtime = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
 if (-not [string]::Equals([IO.Path]::GetFullPath($runtime.root), $root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime metadata belongs to a different project path.' }
 if (-not (Test-Path -LiteralPath $runtime.app_exe -PathType Leaf)) { throw "Codex app is missing: $($runtime.app_exe)" }
 $savedBaseline = $BypassRouter -and -not [string]::IsNullOrWhiteSpace($runtime.original_codex_cli_path)
+if ($BypassRouter -and $ClassifierEval) { throw 'Classifier evaluation requires adaptive routing.' }
 if (-not $BypassRouter) {
     $command = [IO.Path]::GetFullPath($runtime.launcher)
     $prefix = $root.TrimEnd('\') + '\'
@@ -107,7 +109,9 @@ if ($BypassRouter -and -not $savedBaseline) {
 } else {
     $start.EnvironmentVariables['CODEX_CLI_PATH'] = $command
 }
+$start.EnvironmentVariables.Remove('CODEX_ROUTER_CLASSIFIER_EVAL') | Out-Null
+if ($ClassifierEval) { $start.EnvironmentVariables['CODEX_ROUTER_CLASSIFIER_EVAL'] = '6' }
 $process = [Diagnostics.Process]::Start($start)
 if ($null -eq $process) { throw 'Codex did not start.' }
-$message = if ($BypassRouter) { 'Started Codex with its saved baseline launch environment.' } else { 'Started Codex with adaptive routing for this app process.' }
+$message = if ($BypassRouter) { 'Started Codex with its saved baseline launch environment.' } elseif ($ClassifierEval) { 'Started Codex with adaptive routing and one bounded classifier evaluation.' } else { 'Started Codex with adaptive routing for this app process.' }
 Write-Host $message

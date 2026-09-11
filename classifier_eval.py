@@ -17,8 +17,9 @@ REPORT_PATH = ROOT / "state" / "classifier-eval-latest.json"
 
 
 class SnapshotClassifier(InternalClassifier):
-    def __init__(self, sidecar, snapshots):
-        super().__init__(None, sidecar_factory=lambda: sidecar)
+    def __init__(self, sidecar, snapshots, sidecar_factory):
+        super().__init__(None, sidecar_factory=sidecar_factory)
+        self.sidecar = sidecar
         self.snapshots = snapshots
 
     def _call(self, method, params, timeout=None):
@@ -105,8 +106,11 @@ def run(cases, report_path=REPORT_PATH):
     report = {"version": 1, "started_at": datetime.now(timezone.utc).isoformat(),
               "scope": "classifier routing only; no task answers", "cases": []}
     snapshots = {case["id"]: _snapshot(case) for case in cases}
-    sidecar = AppServer(executable=_real_codex(), arguments=SIDECAR_ARGS)
-    classifier = SnapshotClassifier(sidecar, snapshots)
+    def new_sidecar():
+        return AppServer(executable=_real_codex(), arguments=SIDECAR_ARGS)
+
+    sidecar = new_sidecar()
+    classifier = SnapshotClassifier(sidecar, snapshots, new_sidecar)
     try:
         account = sidecar.call("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
@@ -122,6 +126,12 @@ def run(cases, report_path=REPORT_PATH):
             except Exception as error:
                 row = {"case_id": case["id"], "group": case["group"],
                        "failure": type(error).__name__}
+                if isinstance(error, ClassifierFailure):
+                    row.update({"failure_stage": error.stage,
+                                "failure_kind": error.failure_kind,
+                                "rpc_code": error.rpc_code,
+                                "error_kind": error.error_kind,
+                                "duration_ms": error.duration_ms})
             report["cases"].append(row)
             report["summary"] = summarize(report["cases"], len(cases))
             report_path.parent.mkdir(parents=True, exist_ok=True)
