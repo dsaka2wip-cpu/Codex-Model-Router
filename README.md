@@ -168,7 +168,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 | 명시적 GUI 값 보존 (`[router off]`) | ✅ 확인 |
 | tool/command 승인 흐름 | ✅ 현재 작업에서 정상 |
 | 새 푸터의 실제 GUI 렌더링 | ✅ `DEEP: Sol / High` 형식과 사용량 추정 표시 확인 |
-| 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 검사 통과, 실제 GUI 재시작 확인 대기 |
+| 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 및 실제 GUI 재시작 확인 |
 | Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
 | 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
 
