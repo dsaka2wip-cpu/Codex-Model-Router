@@ -139,6 +139,20 @@ class StdioRouterTests(unittest.TestCase):
                          ({"turns": []}, "[Persistent task state]\nActive state", "summary"))
         self.assertEqual(timeouts, [5])
 
+    def test_unreadable_new_thread_uses_current_request_classifier(self):
+        classifier = InternalClassifier(io.BytesIO())
+        classifier._call = lambda *_args, **_kwargs: (
+            _ for _ in ()).throw(RpcFailure({"code": -32600, "message": "request failed"}))
+        thread, context, mode, _duration = classifier._read_source("new-thread", "stale summary")
+        self.assertEqual((thread, context, mode), ({"turns": []}, "", "current"))
+
+    def test_unrelated_source_rpc_failure_is_not_hidden(self):
+        classifier = InternalClassifier(io.BytesIO())
+        classifier._call = lambda *_args, **_kwargs: (
+            _ for _ in ()).throw(RpcFailure({"code": -32601, "message": "method not found"}))
+        with self.assertRaises(RpcFailure):
+            classifier._read_source("thread", "")
+
     def test_late_internal_response_after_timeout_stays_hidden(self):
         classifier = InternalClassifier(io.BytesIO(), timeout=0.001)
         with self.assertRaises(TimeoutError):

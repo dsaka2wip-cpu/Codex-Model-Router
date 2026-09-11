@@ -205,7 +205,7 @@ class AdaptivePolicy:
                 record[key] = value
             elif key == "context_mode" and value in ("fork", "read", "sidecar"):
                 record[key] = value
-            elif key == "source_context" and value in ("read", "summary"):
+            elif key == "source_context" and value in ("read", "summary", "current"):
                 record[key] = value
             elif key == "error_kind" and value in ("invalid_params", "not_found", "busy", "permission",
                                                      "unsupported", "other"):

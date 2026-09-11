@@ -266,6 +266,12 @@ class InternalClassifier:
                 raise
             thread = {"turns": []}
             source_context = "summary"
+        except RpcFailure as error:
+            if error.rpc_code != -32600:
+                raise
+            thread = {"turns": []}
+            summary = ""
+            source_context = "current"
         return (thread, self._context(thread, summary), source_context,
                 max(0, round((time.monotonic() - started_at) * 1000)))
 

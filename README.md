@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-63_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-65_passed-7C3AED">
 </p>
 
 ---
@@ -148,6 +148,7 @@ Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: N
 - 판별 로그에는 조정에 필요한 시간·토큰 수와 제한된 실패 유형만 숫자/분류값으로 기록합니다.
 - 판별 입력은 현재 요청 원문, 최근 3턴 최대 4,000자, 메모리 내 작업 상태 최대 1,200자로 제한합니다.
 - 부모 thread가 실행 중이라 읽기가 지연되면 5초 뒤 메모리 내 작업 상태로 판별을 계속합니다. 해당 상태가 아직 없으면 로컬 규칙으로 안전하게 처리합니다.
+- 새 thread처럼 `thread/read`가 `-32600`을 반환하면 과거 요약을 섞지 않고 현재 입력만 Sol/medium 판별기에 전달합니다. 다른 RPC 오류는 숨기지 않습니다.
 - 작업 상태 요약은 같은 Sol/medium 판별 응답에서 함께 만들며 디스크에 저장하지 않습니다. 앱을 다시 시작하면 최근 문맥에서 다시 구성합니다.
 - 판별은 동일한 `codex.exe`와 ChatGPT 인증을 공유하는 경량 App Server sidecar에서 실행하며, 프로젝트 지침·스킬·플러그인·MCP·실행 도구를 비활성화합니다.
 - 서버 stderr는 GUI로 전달할 뿐 별도 수집하지 않습니다.
@@ -160,14 +161,14 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 63개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 65개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
 | Sol/medium 하위 작업 계획·모델/effort 다양화 | ✅ 정책·프로토콜 검사 통과 |
 | 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
 | 실제 GUI 경량 판별 sidecar | ✅ 32,447 → 7,207 tokens (약 78% 감소) |
-| GUI source read 지연 복구 | ✅ 정상 read 0.5초, 지연 read는 5초 후 안전 fallback |
+| GUI source read 복구 | ✅ 정상 read, 5초 지연 fallback, 새 thread의 현재 입력 판별 확인 |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
 | 23개 후보를 제시한 실제 GUI 판별 1건 → Sol/high | ✅ 요청 route와 서버 settings 일치 |
@@ -198,6 +199,12 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 ```
 
 결과는 Git에서 제외된 `state/classifier-eval-latest.json`에 사례 ID, model/effort, 하위 작업 역할·수, 시간·토큰 숫자만 저장합니다. 프롬프트·응답·오류 원문은 저장하지 않습니다. 이 평가는 라우팅 적합성과 판별 사용량을 측정하며, 실제 작업 결과물의 품질이나 ChatGPT Pro의 금전 비용을 뜻하지 않습니다.
+
+전체 12개 평가가 필요할 때만 아래처럼 제한을 올립니다.
+
+```powershell
+& '.\Start Adaptive Codex.cmd' -ClassifierEval -ClassifierEvalLimit 12
+```
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 

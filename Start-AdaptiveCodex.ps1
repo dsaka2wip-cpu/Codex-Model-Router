@@ -2,6 +2,7 @@
 param(
     [switch]$BypassRouter,
     [switch]$ClassifierEval,
+    [ValidateRange(1, 12)][int]$ClassifierEvalLimit = 6,
     [switch]$CheckOnly,
     [switch]$WaitForExit,
     [switch]$LoadFunctionsOnly
@@ -110,7 +111,7 @@ if ($BypassRouter -and -not $savedBaseline) {
     $start.EnvironmentVariables['CODEX_CLI_PATH'] = $command
 }
 $start.EnvironmentVariables.Remove('CODEX_ROUTER_CLASSIFIER_EVAL') | Out-Null
-if ($ClassifierEval) { $start.EnvironmentVariables['CODEX_ROUTER_CLASSIFIER_EVAL'] = '6' }
+if ($ClassifierEval) { $start.EnvironmentVariables['CODEX_ROUTER_CLASSIFIER_EVAL'] = [string]$ClassifierEvalLimit }
 $process = [Diagnostics.Process]::Start($start)
 if ($null -eq $process) { throw 'Codex did not start.' }
 $message = if ($BypassRouter) { 'Started Codex with its saved baseline launch environment.' } elseif ($ClassifierEval) { 'Started Codex with adaptive routing and one bounded classifier evaluation.' } else { 'Started Codex with adaptive routing for this app process.' }
