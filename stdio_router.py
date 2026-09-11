@@ -332,6 +332,9 @@ class InternalClassifier:
                 with self.lock:
                     self.turns.pop(hidden_thread, None)
 
+    def update_settings(self, params):
+        self._call("thread/settings/update", params, timeout=5)
+
 
 def _pump_lines(source, destination, transform, limit):
     """Copy binary lines, bypassing inspection when a line exceeds *limit*."""
@@ -437,6 +440,8 @@ def run_bridge(executable, args, policy=None, *, stdin=None, stdout=None, stderr
     classifier = InternalClassifier(process.stdin) if use_policy else None
     if classifier and hasattr(policy, "set_classifier"):
         policy.set_classifier(classifier.classify)
+    if classifier and hasattr(policy, "set_settings_updater"):
+        policy.set_settings_updater(classifier.update_settings)
     client_transform = _json_transform(policy, "client") if use_policy else (lambda raw: raw)
     server_transform = (_json_transform(policy, "server", classifier.handle_server)
                         if use_policy else (lambda raw: raw))

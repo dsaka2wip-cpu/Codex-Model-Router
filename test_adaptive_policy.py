@@ -2,6 +2,7 @@
 import copy
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -172,6 +173,34 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIsNone(routed["params"]["effort"])
         request, routed = self.turn("[router model=gui effort=low]\nWhat is JSON?", collaborationMode=collaboration)
         self.assertEqual(routed["params"]["collaborationMode"]["settings"]["model"], "gpt-6-astra")
+
+    def test_completed_auto_turn_restores_idle_sol_medium_and_preserves_mode(self):
+        restored, done = [], threading.Event()
+        self.policy.set_settings_updater(lambda params: (restored.append(copy.deepcopy(params)), done.set()))
+        collaboration = {"mode": "plan", "settings": {"model": "gpt-6-astra",
+            "reasoning_effort": "ultra", "developer_instructions": "Keep this."}}
+        request, routed = self.turn("Design a distributed system architecture.", model=None, effort=None,
+                                    collaborationMode=collaboration)
+        self.assertEqual(routed["params"]["collaborationMode"]["settings"]["model"], "gpt-6-astra")
+        self.policy.on_server({"id": request["id"], "result": {"turn": {"id": "restore-turn"}}})
+        self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
+            "turn": {"id": "restore-turn", "status": "completed"}}})
+        self.assertTrue(done.wait(1))
+        self.assertEqual((restored[0]["model"], restored[0]["effort"]),
+                         ("gpt-5.6-sol", "medium"))
+        nested = restored[0]["collaborationMode"]
+        self.assertEqual((nested["mode"], nested["settings"]["model"],
+                          nested["settings"]["reasoning_effort"],
+                          nested["settings"]["developer_instructions"]),
+                         ("plan", "gpt-5.6-sol", "medium", "Keep this."))
+
+        restored.clear()
+        off, routed = self.turn("[router off]\nWhat is JSON?", model="gpt-5.6-sol", effort="high")
+        self.assertIs(off, routed)
+        self.policy.on_server({"id": off["id"], "result": {"turn": {"id": "off-turn"}}})
+        self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
+            "turn": {"id": "off-turn", "status": "completed"}}})
+        self.assertEqual(restored, [])
 
     def test_resume_effort_inheritance_and_independent_model_auto(self):
         self.exchange("thread/resume", {"thread": {"id": "same-thread"},

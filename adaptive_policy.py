@@ -148,17 +148,29 @@ class AdaptivePolicy:
         self.catalog = {}
         self.auth = None
         self.classifier = None
+        self.settings_updater = None
         self.audit("bridge_started")
 
     def set_classifier(self, callback):
         self.classifier = callback
+
+    def set_settings_updater(self, callback):
+        self.settings_updater = callback
+
+    def _restore_idle(self, params):
+        thread_id = params["threadId"]
+        try:
+            self.settings_updater(params)
+            self.audit("idle_restored", thread_id, model=params["model"], effort=params["effort"])
+        except Exception:
+            self.audit("idle_restore_failed", thread_id)
 
     def audit(self, event, thread_id=None, **fields):
         """Closed allowlist: no prompt, token, path, command, error text or raw ID."""
         if event not in {"bridge_started", "policy_error", "config_error", "control_error",
                          "passthrough", "route", "settings", "turn_completed", "rpc_error",
                          "stream", "approval", "file_change", "model_rerouted", "auth", "footer",
-                         "classifier", "classifier_fallback"}:
+                          "classifier", "classifier_fallback", "idle_restored", "idle_restore_failed"}:
             return
         record = {"at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), "event": event}
         if isinstance(thread_id, str):
@@ -358,6 +370,13 @@ class AdaptivePolicy:
                 updated = copy.deepcopy(message)
                 target = updated["params"]
                 nested = target.get("collaborationMode")
+                idle = config["tiers"]["NORMAL"]
+                restore = {"threadId": thread_id, "model": idle["model"], "effort": idle["effort"]}
+                if isinstance(nested, dict):
+                    restore["collaborationMode"] = copy.deepcopy(params["collaborationMode"])
+                    idle_settings = restore["collaborationMode"]["settings"]
+                    idle_settings["model"] = idle["model"]
+                    idle_settings["reasoning_effort"] = idle["effort"]
                 for axis in ("model", "effort"):
                     if settings[axis] == "gui":
                         continue
@@ -372,6 +391,7 @@ class AdaptivePolicy:
                     add_subagent_plan(target, decision.get("subagents", []))
                 self.pending[key].update(previous=state["previous"], controls=state["controls"].copy(),
                                          route=route, tier=tier, model=chosen["model"], effort=chosen["effort"],
+                                         restore=restore,
                                          classifier=(decision and {"model": config["classifier"]["model"],
                                                                   "effort": config["classifier"]["effort"],
                                                                   "usage": decision.get("usage")}),
@@ -531,6 +551,7 @@ class AdaptivePolicy:
                             self.turns[turn_id] = {
                                 "thread": thread_id, "tier": request["tier"], "model": request["model"],
                                 "effort": request["effort"], "usage_start": copy.deepcopy(state["usage_total"]),
+                                "restore": copy.deepcopy(request.get("restore")),
                                 "classifier": request.get("classifier"),
                             }
                             state["active_turn"] = turn_id
@@ -557,6 +578,10 @@ class AdaptivePolicy:
                     footer_rows = self._footer_messages(final_message, thread_id, turn_id, final_item)
                 if state.get("active_turn") == turn_id:
                     state["active_turn"] = None
+                restore = turn.get("restore") if turn else None
+                if self.settings_updater and isinstance(restore, dict):
+                    threading.Thread(target=self._restore_idle, args=(restore,),
+                                     name="codex-router-idle-restore", daemon=True).start()
                 if footer_rows:
                     return [*footer_rows, message]
             elif method == "item/agentMessage/delta" and isinstance(thread_id, str):

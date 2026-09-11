@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-54_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-55_passed-7C3AED">
 </p>
 
 ---
@@ -139,6 +139,8 @@ Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: N
 
 기존 `/model astra high` 형식도 지원합니다. Plan mode의 `collaborationMode.settings.model`과 `reasoning_effort`도 함께 처리합니다. 같은 thread 안에서 모델이 바뀌어도 대화 맥락은 유지됩니다.
 
+자동 라우팅 턴이 끝나면 Router가 thread의 다음 턴 기본값을 **Sol / medium**으로 되돌립니다. 그래서 어려운 턴에 사용한 Sol/Extra High나 Astra가 입력창 프리셋에 남지 않습니다. `[router off]`로 GUI 값을 그대로 사용한 턴은 자동 복구하지 않습니다.
+
 ## 안전하게 실패합니다
 
 - 파싱 실패, 알 수 없는 모델 조합, API key 인증, 다른 provider에서는 원래 요청을 보존합니다.
@@ -153,7 +155,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 54개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 55개 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
 | Sol/medium 하위 작업 계획·모델/effort 다양화 | ✅ 정책·프로토콜 검사 통과 |
@@ -166,6 +168,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 | 명시적 GUI 값 보존 (`[router off]`) | ✅ 확인 |
 | tool/command 승인 흐름 | ✅ 현재 작업에서 정상 |
 | 새 푸터의 실제 GUI 렌더링 | ✅ `DEEP: Sol / High` 형식과 사용량 추정 표시 확인 |
+| 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 검사 통과, 실제 GUI 재시작 확인 대기 |
 | Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
 | 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
 

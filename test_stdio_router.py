@@ -17,6 +17,14 @@ class Policy:
         self.client = []
         self.server = []
         self.audit_events = []
+        self.classifier = None
+        self.settings_updater = None
+
+    def set_classifier(self, callback):
+        self.classifier = callback
+
+    def set_settings_updater(self, callback):
+        self.settings_updater = callback
 
     def on_client(self, message):
         self.client.append(message)
@@ -73,6 +81,8 @@ class StdioRouterTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[4])["method"], "item/agentMessage/delta")
         self.assertEqual(policy.client[0]["id"], "abc")
         self.assertEqual(policy.server[-1]["method"], "item/agentMessage/delta")
+        self.assertTrue(callable(policy.classifier))
+        self.assertTrue(callable(policy.settings_updater))
         self.assertEqual(errors, b"child-stderr\x00\xff")
         self.assertEqual(code, 0)
 
