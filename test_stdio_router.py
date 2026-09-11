@@ -207,6 +207,8 @@ class StdioRouterTests(unittest.TestCase):
                 stdout=output,
                 stderr=io.BytesIO(),
             )
+            audit = [json.loads(line) for path in (root / "audit").glob("*.jsonl")
+                     for line in path.read_text(encoding="utf-8").splitlines()]
         response = json.loads(output.getvalue().splitlines()[-1])
         received = response["result"]["received"]
         self.assertEqual(code, 0)
@@ -218,6 +220,11 @@ class StdioRouterTests(unittest.TestCase):
         self.assertIn("[codex-route:lookup] gpt-5.6-luna / high",
                       settings["developer_instructions"])
         self.assertNotIn(b"classifier-thread", output.getvalue())
+        measured = next(row for row in audit if row["event"] == "classifier")
+        self.assertGreaterEqual(measured["duration_ms"], 0)
+        self.assertEqual((measured["input_tokens"], measured["cached_tokens"],
+                          measured["output_tokens"], measured["reasoning_tokens"],
+                          measured["total_tokens"]), (50, 10, 5, 2, 55))
 
 
 def fake_child(argv):

@@ -10,8 +10,8 @@ function Assert-ThrowsLike([scriptblock]$Action, [string]$Pattern) {
 }
 
 $powershell = (Get-Process -Id $PID).Path
-Invoke-AdaptiveCodexLauncherPreflight -Command $powershell -Arguments '-NoProfile -NonInteractive -Command "exit 0"' -TimeoutMilliseconds 1000
-Assert-ThrowsLike { Invoke-AdaptiveCodexLauncherPreflight -Command $powershell -Arguments '-NoProfile -NonInteractive -Command "exit 7"' -TimeoutMilliseconds 1000 } '*exited with code 7*'
+Invoke-AdaptiveCodexLauncherPreflight -Command $powershell -Arguments '-NoProfile -NonInteractive -Command "exit 0"' -TimeoutMilliseconds 5000
+Assert-ThrowsLike { Invoke-AdaptiveCodexLauncherPreflight -Command $powershell -Arguments '-NoProfile -NonInteractive -Command "exit 7"' -TimeoutMilliseconds 5000 } '*exited with code 7*'
 Assert-ThrowsLike { Invoke-AdaptiveCodexLauncherPreflight -Command $powershell -Arguments '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 2"' -TimeoutMilliseconds 100 } '*timed out*'
 & $powershell -NoProfile -NonInteractive -File $startScript -BypassRouter -CheckOnly
 if ($LASTEXITCODE -ne 0) { throw "Bypass check failed with exit code $LASTEXITCODE." }

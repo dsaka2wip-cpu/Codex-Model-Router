@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
@@ -62,11 +63,13 @@ combination instead of guessing low."""
 
 
 class ClassifierFailure(RuntimeError):
-    def __init__(self, stage, rpc_code=None, error_kind=None):
+    def __init__(self, stage, rpc_code=None, error_kind=None, failure_kind=None, duration_ms=None):
         super().__init__(stage)
         self.stage = stage
         self.rpc_code = rpc_code
         self.error_kind = error_kind
+        self.failure_kind = failure_kind
+        self.duration_ms = duration_ms
 
 
 class RpcFailure(RuntimeError):
@@ -202,6 +205,7 @@ class InternalClassifier:
                 self.starting -= 1
 
     def classify(self, source_thread, prompt, config, catalog, inputs):
+        started_at = time.monotonic()
         stage = "prepare"
         model, effort = config["model"], config["effort"]
         if model not in catalog or effort not in catalog[model]["efforts"]:
@@ -315,12 +319,18 @@ class InternalClassifier:
                         or item.get("effort") not in candidates[item["model"]]):
                     raise ValueError("invalid subagent route")
             return {"model": selected_model, "effort": selected_effort,
-                    "subagents": subagents, "usage": state["usage"], "context_mode": context_mode}
+                    "subagents": subagents, "usage": state["usage"], "context_mode": context_mode,
+                    "duration_ms": max(0, round((time.monotonic() - started_at) * 1000))}
         except ClassifierFailure:
             raise
         except Exception as error:
+            failure_kind = ("timeout" if isinstance(error, TimeoutError)
+                            else "invalid_json" if isinstance(error, json.JSONDecodeError)
+                            else "invalid_result" if isinstance(error, (ValueError, TypeError, KeyError))
+                            else "rpc" if isinstance(error, RpcFailure) else "internal")
             raise ClassifierFailure(stage, getattr(error, "rpc_code", None),
-                                    getattr(error, "error_kind", None)) from error
+                                    getattr(error, "error_kind", None), failure_kind,
+                                    max(0, round((time.monotonic() - started_at) * 1000))) from error
         finally:
             with self.lock:
                 self.forking.discard(source_thread)

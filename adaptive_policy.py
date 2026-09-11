@@ -195,7 +195,8 @@ class AdaptivePolicy:
             elif key in ("count", "code") and type(value) is int:
                 record[key] = value
             elif key in ("turns", "luna", "terra", "sol", "astra", "input_tokens", "cached_tokens",
-                         "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent") and type(value) is int:
+                         "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent",
+                         "duration_ms") and type(value) is int:
                 record[key] = value
             elif key == "usage_source" and value in ("total_delta", "last", "equal_turn"):
                 record[key] = value
@@ -205,6 +206,9 @@ class AdaptivePolicy:
                 record[key] = value
             elif key == "error_kind" and value in ("invalid_params", "not_found", "busy", "permission",
                                                      "unsupported", "other"):
+                record[key] = value
+            elif key == "failure_kind" and value in ("timeout", "rpc", "invalid_json", "invalid_result",
+                                                       "internal"):
                 record[key] = value
             elif key == "rpc_code" and type(value) in (str, int):
                 record[key] = value
@@ -337,15 +341,27 @@ class AdaptivePolicy:
                         finally:
                             self.lock.acquire()
                         route, tier = route_for_selection(decision["model"], decision["effort"])
+                        usage = decision.get("usage") or {}
                         self.audit("classifier", thread_id, model=decision["model"], effort=decision["effort"],
                                    count=len(decision.get("subagents", [])),
-                                   context_mode=decision.get("context_mode"))
+                                   context_mode=decision.get("context_mode"),
+                                   duration_ms=decision.get("duration_ms"),
+                                   input_tokens=usage.get("inputTokens"),
+                                   cached_tokens=usage.get("cachedInputTokens"),
+                                   output_tokens=usage.get("outputTokens"),
+                                   reasoning_tokens=usage.get("reasoningOutputTokens"),
+                                   total_tokens=usage.get("totalTokens"))
                     except Exception as error:
                         decision = None
+                        failure_kind = getattr(error, "failure_kind", None)
+                        if failure_kind is None:
+                            failure_kind = "timeout" if isinstance(error, TimeoutError) else "internal"
                         self.audit("classifier_fallback", thread_id, reason="failed",
                                    stage=getattr(error, "stage", "unknown"),
                                    rpc_code=getattr(error, "rpc_code", None),
-                                   error_kind=getattr(error, "error_kind", None))
+                                   error_kind=getattr(error, "error_kind", None),
+                                   failure_kind=failure_kind,
+                                   duration_ms=getattr(error, "duration_ms", None))
                 if decision is None:
                     route = fallback
                     tier = settings.get("tier", ROLE_TIER[route["role"]])

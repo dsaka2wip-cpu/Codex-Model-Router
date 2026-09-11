@@ -66,7 +66,9 @@ class AdaptiveTests(unittest.TestCase):
 
     def test_classifier_can_choose_model_and_effort_independently(self):
         decisions = iter([
-            {"model": "gpt-5.6-luna", "effort": "high", "subagents": [], "usage": None},
+            {"model": "gpt-5.6-luna", "effort": "high", "subagents": [], "duration_ms": 123,
+             "usage": {"inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,
+                       "reasoningOutputTokens": 2, "totalTokens": 55}},
             {"model": "gpt-5.6-terra", "effort": "max", "subagents": [], "usage": None},
             {"model": "gpt-6-astra", "effort": "ultra", "subagents": [], "usage": None},
         ])
@@ -82,6 +84,12 @@ class AdaptiveTests(unittest.TestCase):
             ("gpt-5.6-terra", "max"),
             ("gpt-6-astra", "ultra"),
         ])
+        records = [json.loads(line) for path in self.policy.audit_dir.glob("*.jsonl")
+                   for line in path.read_text(encoding="utf-8").splitlines()]
+        first = next(row for row in records if row["event"] == "classifier")
+        self.assertEqual((first["duration_ms"], first["input_tokens"], first["cached_tokens"],
+                          first["output_tokens"], first["reasoning_tokens"], first["total_tokens"]),
+                         (123, 50, 10, 5, 2, 55))
 
     def test_all_23_live_catalog_pairs_are_accepted(self):
         pairs = [(row["model"], effort["reasoningEffort"])
@@ -124,13 +132,15 @@ class AdaptiveTests(unittest.TestCase):
 
     def test_classifier_failure_uses_local_route(self):
         def fail(*_args):
-            raise TimeoutError
+            raise TimeoutError("secret failure detail")
         self.policy.set_classifier(fail)
         _, routed = self.turn("What is JSON?")
         self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
                          ("gpt-5.6-luna", "low"))
         audit = "\n".join(path.read_text(encoding="utf-8") for path in self.policy.audit_dir.glob("*.jsonl"))
         self.assertIn('"stage": "unknown"', audit)
+        self.assertIn('"failure_kind": "timeout"', audit)
+        self.assertNotIn("secret failure detail", audit)
 
     def test_independent_axes_and_user_control_no_provenance_guess(self):
         request, routed = self.turn("[router model=gui effort=low]\nImplement a calculator.")
