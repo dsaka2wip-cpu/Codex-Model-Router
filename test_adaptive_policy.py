@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from adaptive_policy import AdaptivePolicy, DEFAULT, controls
+from adaptive_policy import AdaptivePolicy, DEFAULT, controls, escalate_selection
 
 CATALOG = [{"model": model, "supportedReasoningEfforts": [{"reasoningEffort": x} for x in efforts]}
            for model, efforts in (
@@ -143,6 +143,31 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIn('"stage": "unknown"', audit)
         self.assertIn('"failure_kind": "timeout"', audit)
         self.assertNotIn("secret failure detail", audit)
+
+    def test_failed_turn_escalates_once_without_overriding_explicit_choice(self):
+        self.policy.set_classifier(lambda *_args: {
+            "model": "gpt-5.6-luna", "effort": "low", "subagents": [], "usage": None})
+        first, _ = self.turn("First attempt")
+        self.policy.on_server({"id": first["id"], "result": {"turn": {"id": "failed-turn"}}})
+        self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
+            "turn": {"id": "failed-turn", "status": "failed"}}})
+
+        retry, routed = self.turn("Retry")
+        self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
+                         ("gpt-5.6-luna", "medium"))
+        self.assertEqual(self.policy.pending[("int", retry["id"])]["route"]["effort"], "medium")
+        self.policy.on_server({"id": retry["id"], "error": {"code": -1}})
+        explicit, routed = self.turn("[router model=luna effort=low]\nRetry explicitly")
+        self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
+                         ("gpt-5.6-luna", "low"))
+        self.accept(explicit)
+        _, routed = self.turn("Next normal turn")
+        self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
+                         ("gpt-5.6-luna", "low"))
+
+        self.assertEqual(escalate_selection(
+            {"model": "gpt-5.6-luna", "effort": "max"}, self.policy.catalog),
+            {"model": "gpt-5.6-terra", "effort": "max"})
 
     def test_independent_axes_and_user_control_no_provenance_guess(self):
         request, routed = self.turn("[router model=gui effort=low]\nImplement a calculator.")

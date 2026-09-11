@@ -34,6 +34,7 @@ AVERAGE_MESSAGE_CREDITS = {"gpt-5.6-luna": 1.0, "gpt-5.6-terra": 5.0,
                            "gpt-5.6-sol": 11.0, "gpt-6-astra": 16.0}
 EFFORT_RANK = {name: rank for rank, name in enumerate(
     ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))}
+MODEL_ORDER = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
 
 
 def rpc_id(value):
@@ -67,6 +68,23 @@ def route_for_selection(model, effort):
         role = "implementation"
     return {"role": role, "model": model, "effort": effort, "reason": "LLM classifier",
             "explicit": False, "explicit_model": False, "explicit_effort": False}, tier
+
+
+def escalate_selection(selection, catalog, *, model=True, effort=True):
+    chosen = copy.deepcopy(selection)
+    supported = catalog[chosen["model"]]["efforts"]
+    if effort:
+        higher = [name for name in EFFORT_RANK
+                  if name in supported and EFFORT_RANK[name] > EFFORT_RANK[chosen["effort"]]]
+        if higher:
+            chosen["effort"] = min(higher, key=EFFORT_RANK.get)
+            return chosen
+    if model:
+        for name in MODEL_ORDER[MODEL_ORDER.index(chosen["model"]) + 1:]:
+            if chosen["effort"] in catalog.get(name, {}).get("efforts", set()):
+                chosen["model"] = name
+                break
+    return chosen
 
 
 def add_subagent_plan(params, routes):
@@ -170,7 +188,8 @@ class AdaptivePolicy:
         if event not in {"bridge_started", "policy_error", "config_error", "control_error",
                          "passthrough", "route", "settings", "turn_completed", "rpc_error",
                          "stream", "approval", "file_change", "model_rerouted", "auth", "footer",
-                          "classifier", "classifier_fallback", "idle_restored", "idle_restore_failed"}:
+                         "classifier", "classifier_fallback", "idle_restored", "idle_restore_failed",
+                         "escalated"}:
             return
         record = {"at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), "event": event}
         if isinstance(thread_id, str):
@@ -234,6 +253,7 @@ class AdaptivePolicy:
             self.threads[thread_id] = {
                 "controls": {}, "previous": None, "settings": {}, "stream": 0,
                 "active_turn": None, "usage_total": None, "last_footer": None,
+                "escalate_next": False,
                 "stats": {"turns": 0, "models": {"Luna": 0, "Terra": 0, "Sol": 0, "Astra": 0},
                           "actual_units": 0.0, "baseline_units": 0.0},
             }
@@ -326,7 +346,8 @@ class AdaptivePolicy:
                 if settings["model"] == settings["effort"] == "gui":
                     state["controls"].update({k: v for k, v in control.items() if k != "tier"})
                     if old_model in self.catalog and old_effort in self.catalog[old_model]["efforts"]:
-                        self.pending[key].update(tier="GUI", model=old_model, effort=old_effort)
+                        self.pending[key].update(tier="GUI", model=old_model, effort=old_effort,
+                                                 consume_escalation=state["escalate_next"])
                     self.audit("passthrough", thread_id, reason="gui", model=old_model, effort=old_effort)
                     return message
                 fallback = choose_route(prose, state["previous"])
@@ -387,6 +408,18 @@ class AdaptivePolicy:
                 if not entry or chosen["effort"] not in entry["efforts"]:
                     self.audit("passthrough", thread_id, reason="unsupported_selection")
                     return message
+                if state["escalate_next"]:
+                    boosted = escalate_selection(
+                        chosen, self.catalog,
+                        model=settings["model"] == "auto" and not route.get("explicit_model"),
+                        effort=settings["effort"] == "auto" and not route.get("explicit_effort"),
+                    )
+                    if boosted != chosen:
+                        self.audit("escalated", thread_id, from_model=chosen["model"],
+                                   to_model=boosted["model"], effort=boosted["effort"])
+                        chosen = boosted
+                        boosted_route, _ = route_for_selection(chosen["model"], chosen["effort"])
+                        route.update({key: boosted_route[key] for key in ("role", "model", "effort", "reason")})
                 if settings.get("tier") is None:
                     tier = tier_for_selection(chosen["model"], chosen["effort"])
                 updated = copy.deepcopy(message)
@@ -414,10 +447,11 @@ class AdaptivePolicy:
                 self.pending[key].update(previous=state["previous"], controls=state["controls"].copy(),
                                          route=route, tier=tier, model=chosen["model"], effort=chosen["effort"],
                                          restore=restore,
-                                         classifier=(decision and {"model": config["classifier"]["model"],
-                                                                  "effort": config["classifier"]["effort"],
-                                                                  "usage": decision.get("usage")}),
-                                         new_controls={k: v for k, v in control.items() if k != "tier"})
+                                          classifier=(decision and {"model": config["classifier"]["model"],
+                                                                   "effort": config["classifier"]["effort"],
+                                                                   "usage": decision.get("usage")}),
+                                          consume_escalation=state["escalate_next"],
+                                          new_controls={k: v for k, v in control.items() if k != "tier"})
                 # Commit policy state only after the backend accepts turn/start.
                 self.audit("route", thread_id, tier=tier, model=chosen["model"],
                            effort=chosen["effort"], mode=(nested or {}).get("mode", "default"))
@@ -562,6 +596,8 @@ class AdaptivePolicy:
                     self._observe_settings(thread.get("id"), {**result, "effort": result.get("reasoningEffort")})
                 elif request["method"] == "turn/start" and isinstance(thread_id, str):
                     state = self._thread(thread_id)
+                    if request.get("consume_escalation"):
+                        state["escalate_next"] = False
                     if "route" in request:
                         state["previous"] = request["route"]
                         state["controls"].update(request["new_controls"])
@@ -593,6 +629,8 @@ class AdaptivePolicy:
                 self.audit("turn_completed", thread_id, status=turn_data.get("status"))
                 self.audit("stream", thread_id, count=state.get("stream", 0))
                 turn = self.turns.get(turn_id)
+                if turn and turn_data.get("status") == "failed":
+                    state["escalate_next"] = True
                 footer_rows = None
                 if turn and turn.get("pending_final"):
                     final_message = turn.pop("pending_final")

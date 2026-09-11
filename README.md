@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-66_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-67_passed-7C3AED">
 </p>
 
 ---
@@ -141,6 +141,8 @@ Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: N
 
 자동 라우팅 턴이 끝나면 Router가 thread의 다음 턴 기본값을 **Sol / medium**으로 되돌립니다. 그래서 어려운 턴에 사용한 Sol/Extra High나 Astra가 입력창 프리셋에 남지 않습니다. `[router off]`로 GUI 값을 그대로 사용한 턴은 자동 복구하지 않습니다.
 
+실제 턴이 `failed`로 끝나면 다음 자동 턴은 선택된 모델의 effort를 한 단계 올립니다. 이미 그 모델의 최고 effort라면 다음 모델로 한 단계 올리며, 사용자가 모델이나 effort를 명시한 축은 변경하지 않습니다. 정상 완료나 사용자 취소는 승급을 만들지 않습니다.
+
 ## 안전하게 실패합니다
 
 - 파싱 실패, 알 수 없는 모델 조합, API key 인증, 다른 provider에서는 원래 요청을 보존합니다.
@@ -161,7 +163,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 66개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 67개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
