@@ -70,6 +70,10 @@ justify Sol/low or Sol/high; Astra/low through Astra/ultra remain distinct choic
 not use high effort to compensate for a model that lacks the required breadth, and do
 not default to Sol/medium merely because it is the classifier's own model.
 
+Classify the request as exactly one task_type: chat, lookup, research, code_edit,
+debugging, design, review, ops, mixed, or unknown. Use mixed only when several types
+are materially present, and unknown only when the request cannot be classified safely.
+
 Also decide whether 2-3 independent subagents would materially reduce elapsed time,
 protect the main thread from noisy exploration, or improve verification. Return no
 subagents for mechanical or tightly sequential work. Prefer parallel read-heavy lanes;
@@ -360,6 +364,9 @@ class InternalClassifier:
                 "properties": {
                     "model": {"type": "string", "enum": list(candidates)},
                     "effort": {"type": "string"},
+                    "task_type": {"type": "string", "enum": [
+                        "chat", "lookup", "research", "code_edit", "debugging",
+                        "design", "review", "ops", "mixed", "unknown"]},
                     "subagents": {
                         "type": "array", "maxItems": 3,
                         "items": {
@@ -376,7 +383,7 @@ class InternalClassifier:
                     },
                     "state_summary": {"type": "string", "maxLength": STATE_SUMMARY_CHARS},
                 },
-                "required": ["model", "effort", "subagents", "state_summary"],
+                "required": ["model", "effort", "task_type", "subagents", "state_summary"],
                 "additionalProperties": False,
             }
             choices = "; ".join(f"{name}: {', '.join(efforts)}" for name, efforts in candidates.items())
@@ -439,6 +446,10 @@ class InternalClassifier:
             selected_model, selected_effort = decision.get("model"), decision.get("effort")
             if selected_model not in candidates or selected_effort not in candidates[selected_model]:
                 raise ValueError("invalid classifier decision")
+            task_type = decision.get("task_type", "unknown")
+            if task_type not in {"chat", "lookup", "research", "code_edit", "debugging",
+                                 "design", "review", "ops", "mixed", "unknown"}:
+                task_type = "unknown"
             subagents = decision.get("subagents")
             if not isinstance(subagents, list) or len(subagents) > 3:
                 raise ValueError("invalid subagent plan")
@@ -453,7 +464,7 @@ class InternalClassifier:
                 raise ValueError("invalid state summary")
             with self.lock:
                 self.summaries[source_thread] = state_summary
-            return {"model": selected_model, "effort": selected_effort,
+            return {"model": selected_model, "effort": selected_effort, "task_type": task_type,
                     "subagents": subagents, "usage": state["usage"], "context_mode": context_mode,
                     "source_context": source_context, "source_read_ms": source_read_ms,
                     "context_chars": len(context),

@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-68_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-72_passed-7C3AED">
 </p>
 
 ---
@@ -161,6 +161,9 @@ Router · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
 - 파싱 실패, 알 수 없는 모델 조합, API key 인증, 다른 provider에서는 원래 요청을 보존합니다.
 - 프롬프트, 응답, 인증 토큰, API 키, tool 인수, 명령, 파일 diff를 Router 로그에 저장하지 않습니다.
 - 판별 로그에는 조정에 필요한 시간·토큰 수와 제한된 실패 유형만 숫자/분류값으로 기록합니다.
+- 로그 스키마 v2는 정책 지문, 해시된 thread/turn, 작업 유형, 선택된 model/effort, 판별·턴 지연, token usage, 승인·파일 변경 발생, 완료 상태, fallback·승급과 턴별 절감 단위만 기록합니다.
+- 프로토콜에서 GUI 기본값과 사용자가 피커에서 방금 고른 값을 구별할 수 없으므로, `explicit_model`과 `explicit_effort`는 첫 줄 제어문이나 기존 명시적 라우팅 문법으로 확인된 경우만 기록합니다.
+- 판별기가 계획한 하위 작업 수는 기록하지만 실제 생성된 하위 작업의 effort는 현재 App Server 이벤트에서 신뢰성 있게 관찰할 수 없어 추정하지 않습니다.
 - 판별 입력은 현재 요청 원문, 최근 3턴 최대 4,000자, 메모리 내 작업 상태 최대 1,200자로 제한합니다.
 - 부모 thread가 실행 중이라 읽기가 지연되면 5초 뒤 메모리 내 작업 상태로 판별을 계속합니다. 해당 상태가 아직 없으면 로컬 규칙으로 안전하게 처리합니다.
 - 새 thread처럼 `thread/read`가 `-32600`을 반환하면 과거 요약을 섞지 않고 현재 입력만 Sol/medium 판별기에 전달합니다. 다른 RPC 오류는 숨기지 않습니다.
@@ -176,7 +179,7 @@ Windows 11, Codex CLI `0.154.0-alpha.6.2`, Codex Desktop `26.908.4834.0`에서 �
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 69개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 72개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
@@ -230,10 +233,15 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 ```powershell
 python .\router_report.py
 python .\router_report.py --json
+python .\router_report.py --current-policy
 python .\router_report.py --all
 ```
 
-기본값은 현재 Router 프로세스의 최신 로그 하나만 분석합니다. `--all`은 이전 실행까지 합친 장기 추세용입니다.
+기본값은 파일명 속 PID와 무관하게 실제 수정 시각이 가장 최근인 Router 프로세스 로그 하나만 분석합니다. `--current-policy`는 가장 최근 정책 지문과 일치하는 모든 프로세스 로그를 합치고, `--all`은 이전 정책까지 포함한 장기 이력을 봅니다.
+
+보고서는 작업 유형별 route, 판별·첫 응답·전체 턴 지연과 판별·전체 턴 token의 p50/p95, 승인·파일 변경 횟수, fallback·실패·유휴 복구 실패·승급 비율을 냅니다. 스키마 v2부터 절감률은 각 턴의 `actual_units`와 Astra/Ultra 기준 `baseline_units` 합계로 가중 계산하며, 이전 로그만 있으면 누적 푸터의 중앙값을 호환값으로 표시합니다.
+
+정책 자동 조정은 하지 않습니다. `ready`는 완료 턴 200개 이상, FAST/NORMAL/DEEP 각 25개 이상, 주요 작업 유형 각 20개 이상일 때만 참이 됩니다. 50개 전에는 이상 징후 확인만 하고, 200~300개에서 첫 조정을 검토하며, 500개부터 안정적인 비교 표본으로 봅니다. 이 수치는 라우팅 비용과 안정성 표본이며 결과물 품질 평가는 별도 사람 검토가 필요합니다.
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 

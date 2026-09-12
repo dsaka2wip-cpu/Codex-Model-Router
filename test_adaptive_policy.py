@@ -369,6 +369,61 @@ class AdaptiveTests(unittest.TestCase):
         response = {"id": 7, "result": {"decision": "accept"}}
         self.assertIs(self.policy.on_client(response), response)
 
+    def test_audit_schema_tracks_policy_route_and_turn_without_content(self):
+        self.policy.set_classifier(lambda *_args: {
+            "model": "gpt-5.6-luna", "effort": "medium", "task_type": "code_edit",
+            "subagents": [{"role": "implementation", "model": "gpt-5.6-sol", "effort": "medium"}],
+            "usage": {"inputTokens": 20, "cachedInputTokens": 5, "outputTokens": 2,
+                      "reasoningOutputTokens": 1, "totalTokens": 22},
+        })
+        request, _ = self.turn("[router model=sol]\nPRIVATE_PROMPT_MARKER")
+        self.policy.on_server({"id": request["id"], "result": {
+            "turn": {"id": "private-turn-id", "status": "inProgress"}}})
+        self.policy.on_server({"method": "item/agentMessage/delta", "params": {
+            "threadId": "same-thread", "turnId": "private-turn-id", "delta": "PRIVATE_DELTA"}})
+        self.policy.on_server({"method": "item/commandExecution/requestApproval", "params": {
+            "threadId": "same-thread", "turnId": "private-turn-id", "command": "PRIVATE_COMMAND"}})
+        self.policy.on_server({"method": "item/completed", "params": {
+            "threadId": "same-thread", "turnId": "private-turn-id", "item": {
+                "id": "private-file", "type": "fileChange", "path": "PRIVATE_PATH"}}})
+        self.policy.on_server({"method": "thread/tokenUsage/updated", "params": {
+            "threadId": "same-thread", "turnId": "private-turn-id", "tokenUsage": {"last": {
+                "inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,
+                "reasoningOutputTokens": 2, "totalTokens": 55}}}})
+        self.assertEqual(self.policy.on_server({"method": "item/completed", "params": {
+            "threadId": "same-thread", "turnId": "private-turn-id", "item": {
+                "id": "private-answer", "type": "agentMessage", "phase": "final_answer",
+                "text": "PRIVATE_RESPONSE"}}}), [])
+        self.policy.on_server({"method": "turn/completed", "params": {
+            "threadId": "same-thread", "turn": {"id": "private-turn-id", "status": "completed"}}})
+
+        records = [json.loads(line) for path in self.policy.audit_dir.glob("*.jsonl")
+                   for line in path.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(all(row["schema_version"] == 2 and len(row["policy_fingerprint"]) == 16
+                            for row in records))
+        route = next(row for row in records if row["event"] == "route")
+        self.assertEqual((route["task_type"], route["explicit_model"], route["explicit_effort"]),
+                         ("code_edit", True, False))
+        started = next(row for row in records if row["event"] == "turn_started")
+        completed = next(row for row in records if row["event"] == "turn_completed")
+        footer = next(row for row in records if row["event"] == "footer")
+        self.assertEqual((started["turn"], completed["turn"], footer["turn"]),
+                         (started["turn"], started["turn"], started["turn"]))
+        self.assertIsInstance(completed["duration_ms"], int)
+        self.assertIsInstance(completed["first_delta_ms"], int)
+        self.assertGreater(footer["baseline_units"], 0)
+        log_text = json.dumps(records)
+        for private in ("PRIVATE_PROMPT_MARKER", "PRIVATE_DELTA", "PRIVATE_COMMAND", "PRIVATE_PATH",
+                        "PRIVATE_RESPONSE", "private-turn-id", "same-thread"):
+            self.assertNotIn(private, log_text)
+
+        old_fingerprint = self.policy.policy_fingerprint
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["tiers"]["NORMAL"]["effort"] = "high"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        self.policy._config()
+        self.assertNotEqual(self.policy.policy_fingerprint, old_fingerprint)
+
     def test_privacy_invalid_config_and_control_are_fail_open(self):
         self.turn("What is JSON? PRIVATE_PROMPT_MARKER")
         self.policy.on_server({"id": self.sequence, "error": {"code": -1, "message": "PRIVATE_ERROR_TOKEN"}})

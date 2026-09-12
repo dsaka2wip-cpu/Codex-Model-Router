@@ -10,11 +10,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app_server import AppServer
-from stdio_router import EFFORT_ORDER, InternalClassifier, SIDECAR_ARGS, _real_codex
+from stdio_router import (ClassifierFailure, EFFORT_ORDER, InternalClassifier,
+                          SIDECAR_ARGS, _real_codex)
 
 
 ROOT = Path(__file__).resolve().parent
 MODEL_ORDER = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+SUBAGENT_MINIMUM = {
+    "lookup": ("gpt-5.6-luna", "medium"),
+    "implementation": ("gpt-5.6-sol", "medium"),
+    "critical_review": ("gpt-5.6-sol", "high"),
+    "hard_problem": ("gpt-6-astra", "high"),
+}
 CASES_PATH = ROOT / "classifier_eval_cases.json"
 REPORT_PATH = ROOT / "state" / "classifier-eval-latest.json"
 LOCK_PATH = ROOT / "state" / "classifier-eval.lock"
@@ -79,6 +86,14 @@ def score_case(case, decision):
     expected = case["expected"]
     count_ok = expected["subagents"][0] <= len(subagents) <= expected["subagents"][1]
     roles_ok = all(item.get("role") in expected["roles"] for item in subagents)
+    routes_ok = all(
+        item.get("role") in SUBAGENT_MINIMUM
+        and item.get("model") in MODEL_ORDER
+        and item.get("effort") in EFFORT_ORDER
+        and MODEL_ORDER.index(item["model"]) >= MODEL_ORDER.index(SUBAGENT_MINIMUM[item["role"]][0])
+        and EFFORT_ORDER.index(item["effort"]) >= EFFORT_ORDER.index(SUBAGENT_MINIMUM[item["role"]][1])
+        for item in subagents
+    )
     critical_under = (
         MODEL_ORDER.index(model) < MODEL_ORDER.index(expected["minimum_model"])
         or EFFORT_ORDER.index(effort) < EFFORT_ORDER.index(expected["minimum_effort"])
@@ -88,12 +103,14 @@ def score_case(case, decision):
         "group": case["group"],
         "model": model,
         "effort": effort,
+        "task_type": decision.get("task_type", "unknown"),
         "subagents": [{"role": item["role"], "model": item["model"], "effort": item["effort"]}
                       for item in subagents],
         "accepted": (model in expected["models"] and effort in expected["efforts"]
-                     and count_ok and roles_ok),
+                     and count_ok and roles_ok and routes_ok),
         "critical_underroute": critical_under,
         "unexpected_subagents": not (count_ok and roles_ok),
+        "underpowered_subagents": not routes_ok,
         "context_chars": decision.get("context_chars"),
         "duration_ms": decision.get("duration_ms"),
         "usage": {key: (decision.get("usage") or {}).get(key) for key in (
@@ -111,11 +128,13 @@ def summarize(rows, requested):
         "accepted": sum(row["accepted"] for row in completed),
         "critical_underroutes": sum(row["critical_underroute"] for row in completed),
         "unexpected_subagents": sum(row["unexpected_subagents"] for row in completed),
+        "underpowered_subagents": sum(row.get("underpowered_subagents", False) for row in completed),
         "classifier_total_tokens": sum(tokens),
         "average_classifier_tokens": round(sum(tokens) / len(tokens)) if tokens else None,
         "selections": dict(Counter(f'{row["model"]}/{row["effort"]}' for row in completed)),
         "passed": (len(completed) == requested and all(row["accepted"] for row in completed)
-                   and not any(row["critical_underroute"] for row in completed)),
+                   and not any(row["critical_underroute"] or row.get("underpowered_subagents")
+                               for row in completed)),
     }
 
 
@@ -138,7 +157,7 @@ def _catalog(client):
 
 def run(cases, report_path=REPORT_PATH):
     report_path = Path(report_path)
-    report = {"version": 1, "started_at": datetime.now(timezone.utc).isoformat(),
+    report = {"version": 2, "started_at": datetime.now(timezone.utc).isoformat(),
               "scope": "classifier routing only; no task answers", "cases": []}
     snapshots = {case["id"]: _snapshot(case) for case in cases}
     def new_sidecar():
@@ -171,7 +190,8 @@ def run(cases, report_path=REPORT_PATH):
             report["summary"] = summarize(report["cases"], len(cases))
             write_report(report, report_path)
             print(json.dumps(row, separators=(",", ":")), flush=True)
-            if "failure" in row or row.get("critical_underroute"):
+            if ("failure" in row or row.get("critical_underroute")
+                    or row.get("underpowered_subagents")):
                 break
     finally:
         classifier.close()

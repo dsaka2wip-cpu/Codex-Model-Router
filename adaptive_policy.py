@@ -5,7 +5,9 @@ import json
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
+from math import isfinite
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -35,6 +37,16 @@ AVERAGE_MESSAGE_CREDITS = {"gpt-5.6-luna": 1.0, "gpt-5.6-terra": 5.0,
 EFFORT_RANK = {name: rank for rank, name in enumerate(
     ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))}
 MODEL_ORDER = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+TASK_TYPES = {"chat", "lookup", "research", "code_edit", "debugging",
+              "design", "review", "ops", "mixed", "unknown"}
+AUDIT_SCHEMA_VERSION = 2
+POLICY_VERSION = "2026-09-12.1"
+
+
+def policy_fingerprint(config):
+    payload = {"policy_version": POLICY_VERSION, "config": config}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
 def rpc_id(value):
@@ -167,6 +179,11 @@ class AdaptivePolicy:
         self.auth = None
         self.classifier = None
         self.settings_updater = None
+        self.policy_fingerprint = policy_fingerprint(DEFAULT)
+        try:
+            self._config()
+        except (ValueError, OSError, TypeError):
+            pass
         self.audit("bridge_started")
 
     def set_classifier(self, callback):
@@ -183,17 +200,24 @@ class AdaptivePolicy:
         except Exception:
             self.audit("idle_restore_failed", thread_id)
 
-    def audit(self, event, thread_id=None, **fields):
+    def audit(self, event, thread_id=None, fingerprint=None, **fields):
         """Closed allowlist: no prompt, token, path, command, error text or raw ID."""
         if event not in {"bridge_started", "policy_error", "config_error", "control_error",
                          "passthrough", "route", "settings", "turn_completed", "rpc_error",
                          "stream", "approval", "file_change", "model_rerouted", "auth", "footer",
                          "classifier", "classifier_fallback", "idle_restored", "idle_restore_failed",
-                         "escalated"}:
+                         "escalated", "turn_started"}:
             return
-        record = {"at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), "event": event}
+        record = {"at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), "event": event,
+                  "schema_version": AUDIT_SCHEMA_VERSION,
+                  "policy_fingerprint": (fingerprint if isinstance(fingerprint, str)
+                                           and re.fullmatch(r"[0-9a-f]{16}", fingerprint)
+                                           else self.policy_fingerprint)}
         if isinstance(thread_id, str):
             record["thread"] = hashlib.sha256(thread_id.encode()).hexdigest()[:16]
+        turn_id = fields.pop("turn_id", None)
+        if isinstance(turn_id, str):
+            record["turn"] = hashlib.sha256(turn_id.encode()).hexdigest()[:16]
         for key, value in fields.items():
             if key in ("model", "from_model", "to_model"):
                 record[key] = safe_model(value)
@@ -215,7 +239,15 @@ class AdaptivePolicy:
                 record[key] = value
             elif key in ("turns", "luna", "terra", "sol", "astra", "input_tokens", "cached_tokens",
                           "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent",
-                          "duration_ms", "context_chars", "source_read_ms") and type(value) is int:
+                          "duration_ms", "first_delta_ms", "context_chars", "source_read_ms",
+                          "planned_subagents") and type(value) is int:
+                record[key] = value
+            elif key in ("actual_units", "baseline_units") and type(value) in (int, float) \
+                    and value >= 0 and isfinite(value):
+                record[key] = round(float(value), 6)
+            elif key in ("explicit_model", "explicit_effort") and type(value) is bool:
+                record[key] = value
+            elif key == "task_type" and value in TASK_TYPES:
                 record[key] = value
             elif key == "usage_source" and value in ("total_delta", "last", "equal_turn"):
                 record[key] = value
@@ -264,6 +296,7 @@ class AdaptivePolicy:
         if not self.path.exists():
             merged = copy.deepcopy(DEFAULT)
             merged["enabled"] = False
+            self.policy_fingerprint = policy_fingerprint(merged)
             return merged
         config = json.loads(self.path.read_text(encoding="utf-8-sig"))
         if not isinstance(config, dict) or set(config) - set(DEFAULT):
@@ -292,6 +325,7 @@ class AdaptivePolicy:
                 or not isinstance(classifier["model"], str) or classifier["effort"] not in EFFORTS):
             raise ValueError("invalid_config")
         classifier["model"] = ALIASES.get(classifier["model"], classifier["model"])
+        self.policy_fingerprint = policy_fingerprint(merged)
         return merged
 
     def on_client(self, message):
@@ -368,6 +402,7 @@ class AdaptivePolicy:
                         usage = decision.get("usage") or {}
                         self.audit("classifier", thread_id, model=decision["model"], effort=decision["effort"],
                                    count=len(decision.get("subagents", [])),
+                                   task_type=decision.get("task_type", "unknown"),
                                    context_mode=decision.get("context_mode"),
                                    source_context=decision.get("source_context"),
                                    source_read_ms=decision.get("source_read_ms"),
@@ -422,6 +457,11 @@ class AdaptivePolicy:
                         route.update({key: boosted_route[key] for key in ("role", "model", "effort", "reason")})
                 if settings.get("tier") is None:
                     tier = tier_for_selection(chosen["model"], chosen["effort"])
+                task_type = decision.get("task_type", "unknown") if decision else "unknown"
+                explicit_model = bool(route.get("explicit_model") or "tier" in control
+                                      or control.get("model") not in (None, "auto", "gui"))
+                explicit_effort = bool(route.get("explicit_effort") or "tier" in control
+                                       or control.get("effort") not in (None, "auto", "gui"))
                 updated = copy.deepcopy(message)
                 target = updated["params"]
                 nested = target.get("collaborationMode")
@@ -446,6 +486,10 @@ class AdaptivePolicy:
                     add_subagent_plan(target, decision.get("subagents", []))
                 self.pending[key].update(previous=state["previous"], controls=state["controls"].copy(),
                                          route=route, tier=tier, model=chosen["model"], effort=chosen["effort"],
+                                         policy_fingerprint=self.policy_fingerprint,
+                                         task_type=task_type, explicit_model=explicit_model,
+                                         explicit_effort=explicit_effort,
+                                         planned_subagents=len(decision.get("subagents", [])) if decision else 0,
                                          restore=restore,
                                           classifier=(decision and {"model": config["classifier"]["model"],
                                                                    "effort": config["classifier"]["effort"],
@@ -454,7 +498,9 @@ class AdaptivePolicy:
                                           new_controls={k: v for k, v in control.items() if k != "tier"})
                 # Commit policy state only after the backend accepts turn/start.
                 self.audit("route", thread_id, tier=tier, model=chosen["model"],
-                           effort=chosen["effort"], mode=(nested or {}).get("mode", "default"))
+                           effort=chosen["effort"], mode=(nested or {}).get("mode", "default"),
+                           task_type=task_type, explicit_model=explicit_model,
+                           explicit_effort=explicit_effort)
                 return updated
             except (ValueError, TypeError, KeyError):
                 self.audit("control_error", thread_id, reason="invalid_control")
@@ -555,12 +601,15 @@ class AdaptivePolicy:
                   f'Sol {counts["Sol"]} / '
                   f'Astra {counts["Astra"]} · 사용량 절감 추정 {saved:.0f}%')
         usage = usage if isinstance(usage, dict) else {}
-        self.audit("footer", thread_id, tier=turn["tier"] if turn["tier"] in TIERS else None,
+        self.audit("footer", thread_id, fingerprint=turn.get("policy_fingerprint"),
+                   tier=turn["tier"] if turn["tier"] in TIERS else None,
+                   turn_id=turn_id, task_type=turn.get("task_type", "unknown"),
                    model=turn["model"], effort=turn["effort"], turns=stats["turns"],
                    luna=counts["Luna"], terra=counts["Terra"], sol=counts["Sol"], astra=counts["Astra"],
                    input_tokens=usage.get("inputTokens"), cached_tokens=usage.get("cachedInputTokens"),
                    output_tokens=usage.get("outputTokens"), reasoning_tokens=usage.get("reasoningOutputTokens"),
                    total_tokens=usage.get("totalTokens"), saved_percent=round(saved),
+                   actual_units=actual_units, baseline_units=baseline_units,
                    usage_source=turn.get("usage_source", "equal_turn"))
         suffix = "\n\n---\n" + footer
         updated = copy.deepcopy(message)
@@ -616,7 +665,21 @@ class AdaptivePolicy:
                                 "effort": request["effort"], "usage_start": copy.deepcopy(state["usage_total"]),
                                 "restore": copy.deepcopy(request.get("restore")),
                                 "classifier": request.get("classifier"),
+                                "policy_fingerprint": request.get("policy_fingerprint"),
+                                "task_type": request.get("task_type", "unknown"),
+                                "explicit_model": request.get("explicit_model", False),
+                                "explicit_effort": request.get("explicit_effort", False),
+                                "planned_subagents": request.get("planned_subagents", 0),
+                                "started_at": time.monotonic(),
                             }
+                            self.audit("turn_started", thread_id,
+                                       fingerprint=request.get("policy_fingerprint"), turn_id=turn_id,
+                                       tier=request["tier"] if request["tier"] in TIERS else None,
+                                       model=request["model"], effort=request["effort"],
+                                       task_type=request.get("task_type", "unknown"),
+                                       explicit_model=request.get("explicit_model", False),
+                                       explicit_effort=request.get("explicit_effort", False),
+                                       planned_subagents=request.get("planned_subagents", 0))
                             state["active_turn"] = turn_id
                     state["stream"] = 0
                 return
@@ -631,9 +694,21 @@ class AdaptivePolicy:
                 state = self._thread(thread_id) if isinstance(thread_id, str) else {}
                 turn_data = params.get("turn") or {}
                 turn_id = turn_data.get("id")
-                self.audit("turn_completed", thread_id, status=turn_data.get("status"))
-                self.audit("stream", thread_id, count=state.get("stream", 0))
                 turn = self.turns.get(turn_id)
+                duration_ms = (max(0, round((time.monotonic() - turn["started_at"]) * 1000))
+                               if turn and type(turn.get("started_at")) in (int, float) else None)
+                self.audit("turn_completed", thread_id,
+                           fingerprint=turn.get("policy_fingerprint") if turn else None, turn_id=turn_id,
+                           status=turn_data.get("status"),
+                           tier=turn.get("tier") if turn else None,
+                           model=turn.get("model") if turn else None,
+                           effort=turn.get("effort") if turn else None,
+                           task_type=turn.get("task_type", "unknown") if turn else "unknown",
+                           duration_ms=duration_ms,
+                           first_delta_ms=turn.get("first_delta_ms") if turn else None)
+                self.audit("stream", thread_id,
+                           fingerprint=turn.get("policy_fingerprint") if turn else None,
+                           turn_id=turn_id, count=state.get("stream", 0))
                 if turn and turn_data.get("status") == "failed":
                     state["escalate_next"] = True
                 footer_rows = None
@@ -649,8 +724,12 @@ class AdaptivePolicy:
                                      name="codex-router-idle-restore", daemon=True).start()
                 if footer_rows:
                     return [*footer_rows, message]
-            elif method == "item/agentMessage/delta" and isinstance(thread_id, str):
+            elif method in ("item/agentMessage/delta", "item/plan/delta") and isinstance(thread_id, str):
                 self._thread(thread_id)["stream"] += 1
+                turn = self.turns.get(params.get("turnId"))
+                if turn and "first_delta_ms" not in turn:
+                    turn["first_delta_ms"] = max(
+                        0, round((time.monotonic() - turn["started_at"]) * 1000))
             elif method == "thread/tokenUsage/updated" and isinstance(thread_id, str):
                 state = self._thread(thread_id)
                 token_usage = params.get("tokenUsage") or {}
@@ -672,11 +751,17 @@ class AdaptivePolicy:
                             turn["pending_final"] = copy.deepcopy(message)
                             return []
                 if item.get("type") == "fileChange":
-                    self.audit("file_change", thread_id)
+                    turn = self.turns.get(params.get("turnId"))
+                    self.audit("file_change", thread_id,
+                               fingerprint=turn.get("policy_fingerprint") if turn else None,
+                               turn_id=params.get("turnId"))
             elif method == "model/rerouted":
                 turn = self.turns.get(params.get("turnId"))
                 if turn and isinstance(params.get("toModel"), str):
                     turn["model"] = params["toModel"]
                 self.audit("model_rerouted", thread_id, from_model=params.get("fromModel"), to_model=params.get("toModel"))
             elif method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"):
-                self.audit("approval", thread_id)
+                turn = self.turns.get(params.get("turnId"))
+                self.audit("approval", thread_id,
+                           fingerprint=turn.get("policy_fingerprint") if turn else None,
+                           turn_id=params.get("turnId"))

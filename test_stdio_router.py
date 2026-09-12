@@ -216,6 +216,7 @@ class StdioRouterTests(unittest.TestCase):
                     self.events.put({"method": "item/completed", "params": {**common, "item": {
                         "type": "agentMessage", "phase": "final_answer",
                         "text": json.dumps({"model": "gpt-5.6-luna", "effort": "high",
+                                            "task_type": "lookup",
                                             "subagents": [], "state_summary": "Keep active constraints."})}}})
                     self.events.put({"method": "thread/tokenUsage/updated", "params": {**common,
                         "tokenUsage": {"last": {"inputTokens": 900, "cachedInputTokens": 0,
@@ -248,9 +249,9 @@ class StdioRouterTests(unittest.TestCase):
         first = sidecars[0]
         result = classifier.classify("main-thread", "Current request",
                                      {"model": "gpt-5.6-sol", "effort": "medium"}, catalog, [])
-        self.assertEqual((result["model"], result["effort"], result["context_mode"],
+        self.assertEqual((result["model"], result["effort"], result["task_type"], result["context_mode"],
                           result["usage"]["inputTokens"]),
-                         ("gpt-5.6-luna", "high", "sidecar", 900))
+                         ("gpt-5.6-luna", "high", "lookup", "sidecar", 900))
         turn = next(params for method, params, _ in first.calls if method == "turn/start")
         self.assertIn("Current request", turn["input"][0]["text"])
         first.process.returncode = 1
@@ -270,10 +271,15 @@ class StdioRouterTests(unittest.TestCase):
         good = score_case(case, {"model": "gpt-5.6-sol", "effort": "high", "subagents": [
             {"role": "critical_review", "model": "gpt-5.6-sol", "effort": "high"}],
                                  "usage": {"totalTokens": 20}})
+        weak_child = score_case(case, {"model": "gpt-5.6-sol", "effort": "high", "subagents": [
+            {"role": "critical_review", "model": "gpt-5.6-luna", "effort": "low"}],
+                                        "usage": {"totalTokens": 30}})
         report = summarize([low, good], 2)
         self.assertFalse(low["accepted"])
         self.assertTrue(low["critical_underroute"])
         self.assertTrue(good["accepted"])
+        self.assertFalse(weak_child["accepted"])
+        self.assertTrue(weak_child["underpowered_subagents"])
         self.assertEqual((report["critical_underroutes"], report["classifier_total_tokens"]), (1, 30))
 
     def test_eval_classifier_replaces_discarded_sidecar(self):
@@ -479,7 +485,7 @@ def fake_child(argv):
                 sys.stdout.buffer.write(json.dumps({"method": "item/completed", "params": {
                     "threadId": "classifier-thread", "turnId": "classifier-turn", "item": {
                         "id": "classifier-answer", "type": "agentMessage", "phase": "final_answer",
-                        "text": '{"model":"gpt-5.6-luna","effort":"high","subagents":['
+                        "text": '{"model":"gpt-5.6-luna","effort":"high","task_type":"lookup","subagents":['
                                 '{"role":"lookup","model":"gpt-5.6-luna","effort":"high"}],'
                                 '"state_summary":"Keep the active routing goal and constraints."}'}}}).encode() + b"\n")
                 sys.stdout.buffer.write(json.dumps({"method": "thread/tokenUsage/updated", "params": {
