@@ -114,6 +114,15 @@ Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거�
 
 원복은 Router를 거치지 않고 기존 Codex를 시작합니다. 앱, 설정, 로그인, 대화 데이터는 삭제하지 않습니다.
 
+### 현재 연결 확인
+
+**`Check Adaptive Codex.cmd`**를 더블클릭하면 현재 상태를 읽기 전용으로 확인합니다. Adaptive Router 사용 여부, ChatGPT 인증, 마지막 model/effort, 턴 완료 상태, 다음 턴의 Sol/medium 복귀를 표시하며 프롬프트나 응답은 읽어 출력하지 않습니다.
+
+```powershell
+.\Check-AdaptiveCodex.ps1
+.\Check-AdaptiveCodex.ps1 -Json
+```
+
 ## 매 턴 무엇을 썼는지 보여줍니다
 
 최종 답변과 Plan 결과 끝에 로컬 푸터를 붙입니다.
@@ -181,7 +190,7 @@ Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했�
 | 새 푸터의 실제 GUI 렌더링 | ✅ `DEEP: Sol / High` 형식과 사용량 추정 표시 확인 |
 | 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 및 실제 GUI 재시작 확인 |
 | Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
-| 실제 GUI 원복 전체 흐름 | ⏳ 스크립트 구현, 수동 재시작 검증 대기 |
+| 실제 GUI 원복 전체 흐름 | ✅ Native 우회·기존 thread 유지·Adaptive 재복귀 확인 |
 
 ## 라우팅 평가
 
