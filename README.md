@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-67_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-68_passed-7C3AED">
 </p>
 
 ---
@@ -128,11 +128,13 @@ Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거�
 최종 답변과 Plan 결과 끝에 로컬 푸터를 붙입니다.
 
 ```text
-Router · 판별: Sol / Medium · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
+Router · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
 세션 17턴 · Luna 7 / Terra 4 / Sol 4 / Astra 2 · 사용량 절감 추정 51%
 ```
 
 집계는 현재 Router 프로세스의 해당 thread 기준입니다. 답변과 판별의 실제 token usage가 있으면 공개 credit rate로 계산하고, 없으면 평균값 기반 추정치를 사용합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
+
+정상 자동 경로의 판별기는 고정 Sol/medium이므로 푸터에서는 생략합니다. 로컬 fallback·수동 경로 또는 판별 모델을 바꾼 경우만 `판별:` 정보를 표시합니다.
 
 ## 자동보다 내 선택이 우선
 
@@ -220,6 +222,13 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 ```
 
 2026-09-12 전체 평가에서는 **12/12 accepted**, 치명적 하향 선택 0건, 불필요한 하위 작업 0건을 기록했습니다. 선택 분포는 Luna/low 4건, Terra/medium 2건, Sol/high 2건, Astra/xhigh 1건, Astra/max 3건이었고 판별기 평균 사용량은 6,447 tokens였습니다.
+
+실사용 로그의 모델 분포, fallback, failed turn, 승급, 판별 지연·토큰, 절감 추정은 아래 읽기 전용 명령으로 집계할 수 있습니다. 프롬프트와 답변은 읽거나 출력하지 않습니다.
+
+```powershell
+python .\router_report.py
+python .\router_report.py --json
+```
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 

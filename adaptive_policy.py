@@ -543,9 +543,14 @@ class AdaptivePolicy:
         previous = state["last_footer"] or "없음"
         counts = stats["models"]
         classifier = turn.get("classifier")
-        classifier_label = (f'{MODEL_LABELS.get(classifier["model"], classifier["model"])} / '
-                            f'{classifier["effort"].capitalize()}' if classifier else "로컬/수동")
-        footer = (f'Router · 판별: {classifier_label} · 이번 턴: {current} · 직전 턴: {previous}\n'
+        classifier_label = None
+        if not classifier:
+            classifier_label = "로컬/수동"
+        elif (classifier["model"], classifier["effort"]) != ("gpt-5.6-sol", "medium"):
+            classifier_label = (f'{MODEL_LABELS.get(classifier["model"], classifier["model"])} / '
+                                f'{classifier["effort"].capitalize()}')
+        classifier_prefix = f' · 판별: {classifier_label}' if classifier_label else ""
+        footer = (f'Router{classifier_prefix} · 이번 턴: {current} · 직전 턴: {previous}\n'
                   f'세션 {stats["turns"]}턴 · Luna {counts["Luna"]} / Terra {counts["Terra"]} / '
                   f'Sol {counts["Sol"]} / '
                   f'Astra {counts["Astra"]} · 사용량 절감 추정 {saved:.0f}%')

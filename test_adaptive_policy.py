@@ -257,6 +257,12 @@ class AdaptiveTests(unittest.TestCase):
         self.assertEqual(self.policy.threads["same-thread"]["settings"]["model"], "gpt-5.6-sol")
 
     def test_final_answer_gets_local_footer_and_real_usage_weight(self):
+        def classifier(_thread, prompt, *_args):
+            return {"model": "gpt-5.6-luna" if "JSON" in prompt else "gpt-5.6-sol",
+                    "effort": "low" if "JSON" in prompt else "medium", "subagents": [],
+                    "usage": {"inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0,
+                              "reasoningOutputTokens": 0, "totalTokens": 0}}
+        self.policy.set_classifier(classifier)
         first, _ = self.turn("What is JSON?")
         self.policy.on_server({"id": first["id"], "result": {"turn": {"id": "turn-1", "status": "inProgress"}}})
         self.policy.on_server({"method": "thread/tokenUsage/updated", "params": {
@@ -275,6 +281,7 @@ class AdaptiveTests(unittest.TestCase):
         self.assertEqual(completed, original)
         self.assertEqual(rows[0]["method"], "item/agentMessage/delta")
         self.assertIn("이번 턴: FAST: Luna / Low", rows[0]["params"]["delta"])
+        self.assertNotIn("판별:", rows[0]["params"]["delta"])
         self.assertIn("세션 1턴 · Luna 1 / Terra 0 / Sol 0 / Astra 0", rows[1]["params"]["item"]["text"])
         self.assertIn("사용량 절감 추정 98%", rows[1]["params"]["item"]["text"])
         self.assertIsNone(self.policy.on_server(completed))
@@ -296,6 +303,7 @@ class AdaptiveTests(unittest.TestCase):
             "turn": {"id": "turn-2", "status": "completed"}}})[:-1]
         footer = rows[1]["params"]["item"]["text"]
         self.assertIn("이번 턴: NORMAL: Sol / Medium", footer)
+        self.assertNotIn("판별:", footer)
         self.assertIn("직전 턴: FAST: Luna / Low", footer)
         self.assertIn("세션 2턴 · Luna 1 / Terra 0 / Sol 1 / Astra 0", footer)
 
