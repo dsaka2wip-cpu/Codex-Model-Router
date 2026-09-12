@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "state" / "adaptive-logs"
 
 
-def load_records(log_dir=LOG_DIR):
-    for path in sorted(Path(log_dir).glob("adaptive-*.jsonl")):
+def load_records(log_dir=LOG_DIR, *, latest=False):
+    paths = sorted(Path(log_dir).glob("adaptive-*.jsonl"))
+    for path in (paths[-1:] if latest else paths):
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
@@ -52,9 +53,10 @@ def summarize(records):
 def main():
     parser = argparse.ArgumentParser(description="Summarize non-sensitive Adaptive Router audit metadata.")
     parser.add_argument("--log-dir", type=Path, default=LOG_DIR)
+    parser.add_argument("--all", action="store_true", help="include prior Router process logs")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    report = summarize(load_records(args.log_dir))
+    report = summarize(load_records(args.log_dir, latest=not args.all))
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return

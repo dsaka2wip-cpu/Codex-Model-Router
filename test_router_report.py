@@ -30,3 +30,11 @@ class RouterReportTests(unittest.TestCase):
         self.assertEqual((report["escalations"], report["idle_restore_failures"],
                           report["average_saved_percent"]), (1, 1, 42))
         self.assertNotIn("do not expose", json.dumps(report))
+
+    def test_latest_uses_only_the_most_recent_process_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "adaptive-1.jsonl").write_text('{"event":"route","model":"old"}\n', encoding="utf-8")
+            (root / "adaptive-2.jsonl").write_text('{"event":"route","model":"new"}\n', encoding="utf-8")
+            report = summarize(load_records(root, latest=True))
+        self.assertEqual(report["routes"], {"new/None": 1})

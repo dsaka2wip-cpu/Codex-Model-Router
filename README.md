@@ -228,7 +228,10 @@ CLI가 로그인되지 않은 Desktop 환경에서는 Codex를 완전히 종료�
 ```powershell
 python .\router_report.py
 python .\router_report.py --json
+python .\router_report.py --all
 ```
+
+기본값은 현재 Router 프로세스의 최신 로그 하나만 분석합니다. `--all`은 이전 실행까지 합친 장기 추세용입니다.
 
 ### GUI의 “모델이 변경되었습니다” 표시에 관하여
 
