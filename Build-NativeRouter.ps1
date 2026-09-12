@@ -1,12 +1,15 @@
 [CmdletBinding()]
 param(
     [string]$Python = (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'),
-    [string]$RealCodex = (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin\fd4c151a749f3ab4\codex.exe'),
-    [string]$App = (Join-Path $env:ProgramFiles 'WindowsApps\OpenAI.Codex_26.903.8094.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe')
+    [string]$RealCodex,
+    [string]$App
 )
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($PSScriptRoot)
+. (Join-Path $root 'Resolve-CodexRuntime.ps1')
+$app = Resolve-CodexAppPath -Preferred $App
+$realCodex = Resolve-CodexCliPath -Preferred $RealCodex
 $state = Join-Path $root 'state'
 $bin = Join-Path $state 'bin'
 $source = Join-Path $root 'NativeRouterLauncher.cs'

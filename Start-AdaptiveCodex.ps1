@@ -54,6 +54,8 @@ function Invoke-AdaptiveCodexLauncherPreflight {
     Test-AdaptiveCodexLauncher -Command $Command -Arguments $Arguments -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
+. (Join-Path $PSScriptRoot 'Resolve-CodexRuntime.ps1')
+
 if ($LoadFunctionsOnly) { return }
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +64,15 @@ $metadataPath = Join-Path $root 'state\native-runtime.json'
 if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Run Build-NativeRouter.ps1 first.' }
 $runtime = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
 if (-not [string]::Equals([IO.Path]::GetFullPath($runtime.root), $root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime metadata belongs to a different project path.' }
-if (-not (Test-Path -LiteralPath $runtime.app_exe -PathType Leaf)) { throw "Codex app is missing: $($runtime.app_exe)" }
+$app = Resolve-CodexAppPath -Preferred ([string]$runtime.app_exe)
+$realCodex = Resolve-CodexCliPath -Preferred ([string]$runtime.real_codex)
+if ($runtime.app_exe -ne $app -or $runtime.real_codex -ne $realCodex) {
+    $runtime.app_exe = $app
+    $runtime.real_codex = $realCodex
+    $temporaryMetadata = "$metadataPath.tmp"
+    $runtime | ConvertTo-Json | Set-Content -LiteralPath $temporaryMetadata -Encoding UTF8
+    Move-Item -LiteralPath $temporaryMetadata -Destination $metadataPath -Force
+}
 $savedBaseline = $BypassRouter -and -not [string]::IsNullOrWhiteSpace($runtime.original_codex_cli_path)
 if ($BypassRouter -and $ClassifierEval) { throw 'Classifier evaluation requires adaptive routing.' }
 if (-not $BypassRouter) {
@@ -99,7 +109,7 @@ if ($running) {
 }
 
 $start = [Diagnostics.ProcessStartInfo]::new()
-$start.FileName = $runtime.app_exe
+$start.FileName = $app
 $start.UseShellExecute = $false
 $cleanEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $cleanEnvironment[$entry.Key] = $entry.Value }

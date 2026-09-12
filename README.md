@@ -104,6 +104,8 @@ Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd` (Codex가 실행 �
 
 이미 실행 중인 Codex에는 중간 삽입할 수 없습니다. 실행기가 새 Codex 프로세스에만 `CODEX_CLI_PATH`를 전달하며 사용자·시스템 전역 환경변수는 바꾸지 않습니다.
 
+Codex가 자동 업데이트되어 버전별 `WindowsApps` 및 내부 CLI 경로가 바뀌면 시작 스크립트가 현재 설치 경로를 다시 찾아 로컬 런타임 정보를 갱신합니다. 업데이트 뒤 Router를 다시 빌드할 필요는 없습니다.
+
 ### 즉시 원복
 
 Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거나 실행합니다.
@@ -170,11 +172,11 @@ Router · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
 
 ## 현재 검증 상태
 
-Windows 11, Codex CLI `0.153.4`, Codex Desktop `26.903.8094.0`에서 확인했습니다.
+Windows 11, Codex CLI `0.154.0-alpha.6.2`, Codex Desktop `26.908.4834.0`에서 확인했습니다.
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 67개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 69개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
