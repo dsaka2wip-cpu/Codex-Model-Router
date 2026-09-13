@@ -68,6 +68,8 @@ class AdaptiveTests(unittest.TestCase):
         decisions = iter([
             {"model": "gpt-5.6-luna", "effort": "high", "subagents": [], "duration_ms": 123,
              "context_chars": 456, "source_context": "summary", "source_read_ms": 5000,
+             "recent_turns_fetched": 3, "has_recent_context": True,
+             "has_task_summary": True, "has_current_request": True,
              "usage": {"inputTokens": 50, "cachedInputTokens": 10, "outputTokens": 5,
                        "reasoningOutputTokens": 2, "totalTokens": 55}},
             {"model": "gpt-5.6-terra", "effort": "max", "subagents": [], "usage": None},
@@ -89,9 +91,11 @@ class AdaptiveTests(unittest.TestCase):
                    for line in path.read_text(encoding="utf-8").splitlines()]
         first = next(row for row in records if row["event"] == "classifier")
         self.assertEqual((first["duration_ms"], first["context_chars"], first["source_context"],
-                          first["source_read_ms"], first["input_tokens"], first["cached_tokens"],
+                          first["source_read_ms"], first["recent_turns_fetched"],
+                          first["has_recent_context"], first["has_task_summary"],
+                          first["has_current_request"], first["input_tokens"], first["cached_tokens"],
                           first["output_tokens"], first["reasoning_tokens"], first["total_tokens"]),
-                         (123, 456, "summary", 5000, 50, 10, 5, 2, 55))
+                         (123, 456, "summary", 5000, 3, True, True, True, 50, 10, 5, 2, 55))
 
     def test_all_23_live_catalog_pairs_are_accepted(self):
         pairs = [(row["model"], effort["reasoningEffort"])
@@ -132,17 +136,61 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIn("[codex-route:lookup] gpt-5.6-luna / high", instructions)
         self.assertIn("[codex-route:critical_review] gpt-6-astra / ultra", instructions)
 
-    def test_classifier_failure_uses_local_route(self):
+    def test_classifier_failure_uses_local_route_without_fabricating_usage(self):
         def fail(*_args):
             raise TimeoutError("secret failure detail")
         self.policy.set_classifier(fail)
-        _, routed = self.turn("What is JSON?")
+        request, routed = self.turn("What is JSON?")
         self.assertEqual((routed["params"]["model"], routed["params"]["effort"]),
                          ("gpt-5.6-luna", "low"))
+        self.policy.on_server({"id": request["id"], "result": {"turn": {"id": "failed-classifier"}}})
+        self.policy.on_server({"method": "thread/tokenUsage/updated", "params": {
+            "threadId": "same-thread", "turnId": "failed-classifier", "tokenUsage": {"last": {
+                "inputTokens": 80, "cachedInputTokens": 20, "outputTokens": 20,
+                "reasoningOutputTokens": 5, "totalTokens": 100}}}})
+        self.assertEqual(self.policy.on_server({"method": "item/completed", "params": {
+            "threadId": "same-thread", "turnId": "failed-classifier", "item": {
+                "id": "answer", "type": "agentMessage", "phase": "final_answer", "text": "OK"}}}), [])
+        rows = self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
+            "turn": {"id": "failed-classifier", "status": "completed"}}})[:-1]
+        footer = rows[1]["params"]["item"]["text"]
+        self.assertIn("판별: Sol / Medium 실패→로컬", footer)
+        self.assertIn("이번 턴 관측 사용량 미수신", footer)
+        self.assertIn("Astra/Ultra 기준 비용 절감 추정 미산출", footer)
+        self.assertNotIn("판별 0", footer)
         audit = "\n".join(path.read_text(encoding="utf-8") for path in self.policy.audit_dir.glob("*.jsonl"))
         self.assertIn('"stage": "unknown"', audit)
         self.assertIn('"failure_kind": "timeout"', audit)
         self.assertNotIn("secret failure detail", audit)
+
+    def test_classifier_failure_preserves_observed_partial_usage(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["classifier"] = {"model": "gpt-5.5", "effort": "medium"}
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        error = TimeoutError("private")
+        error.usage = {"inputTokens": 5, "cachedInputTokens": 0, "outputTokens": 1,
+                       "reasoningOutputTokens": 0, "totalTokens": 6}
+        def fail(*_args):
+            raise error
+        self.policy.set_classifier(fail)
+        request, _ = self.turn("What is JSON?")
+        classifier = self.policy.pending[("int", request["id"])]["classifier"]
+        self.assertTrue(classifier["failed"])
+        self.assertEqual(classifier["usage"]["totalTokens"], 6)
+        self.policy.on_server({"id": request["id"], "result": {"turn": {"id": "partial"}}})
+        self.policy.on_server({"method": "thread/tokenUsage/updated", "params": {
+            "threadId": "same-thread", "turnId": "partial", "tokenUsage": {"last": {
+                "inputTokens": 10, "cachedInputTokens": 0, "outputTokens": 2,
+                "reasoningOutputTokens": 0, "totalTokens": 12}}}})
+        self.assertEqual(self.policy.on_server({"method": "item/completed", "params": {
+            "threadId": "same-thread", "turnId": "partial", "item": {
+                "id": "answer", "type": "agentMessage", "phase": "final_answer", "text": "OK"}}}), [])
+        rows = self.policy.on_server({"method": "turn/completed", "params": {"threadId": "same-thread",
+            "turn": {"id": "partial", "status": "completed"}}})[:-1]
+        footer = rows[1]["params"]["item"]["text"]
+        self.assertIn("판별: gpt-5.5 / Medium 실패→로컬", footer)
+        self.assertIn("이번 턴 관측 18 tokens (작업 12 + 판별 6)", footer)
+        self.assertIn("Astra/Ultra 기준 비용 절감 추정 미산출", footer)
 
     def test_failed_turn_escalates_once_without_overriding_explicit_choice(self):
         self.policy.set_classifier(lambda *_args: {
@@ -283,7 +331,9 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIn("이번 턴: FAST: Luna / Low", rows[0]["params"]["delta"])
         self.assertNotIn("판별:", rows[0]["params"]["delta"])
         self.assertIn("세션 1턴 · Luna 1 / Terra 0 / Sol 0 / Astra 0", rows[1]["params"]["item"]["text"])
-        self.assertIn("사용량 절감 추정 98%", rows[1]["params"]["item"]["text"])
+        self.assertIn("이번 턴 관측 100 tokens (작업 100 + 판별 0)", rows[1]["params"]["item"]["text"])
+        self.assertIn("관측 누적 100 tokens (1/1턴) · Astra/Ultra 기준 비용 절감 추정 98%",
+                      rows[1]["params"]["item"]["text"])
         self.assertIsNone(self.policy.on_server(completed))
 
         second, _ = self.turn("Implement a calculator.")
@@ -306,6 +356,20 @@ class AdaptiveTests(unittest.TestCase):
         self.assertNotIn("판별:", footer)
         self.assertIn("직전 턴: FAST: Luna / Low", footer)
         self.assertIn("세션 2턴 · Luna 1 / Terra 0 / Sol 1 / Astra 0", footer)
+        self.assertIn("이번 턴 관측 70 tokens (작업 70 + 판별 0)", footer)
+        self.assertIn("관측 누적 170 tokens (2/2턴)", footer)
+
+    def test_savings_require_complete_priced_usage(self):
+        base = {"model": "gpt-5.6-sol", "effort": "medium", "classifier": None,
+                "usage": {"inputTokens": 10, "cachedInputTokens": 0, "outputTokens": 2,
+                          "reasoningOutputTokens": 0}}
+        self.assertIsNone(self.policy._estimate_units(base))
+        priced = copy.deepcopy(base)
+        priced["usage"]["totalTokens"] = 12
+        self.assertIsNotNone(self.policy._estimate_units(priced))
+        unpriced = copy.deepcopy(priced)
+        unpriced["model"] = "gpt-5.5"
+        self.assertIsNone(self.policy._estimate_units(unpriced))
 
     def test_commentary_and_server_history_are_not_modified(self):
         request, _ = self.turn("Implement a calculator.")
@@ -412,6 +476,9 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIsInstance(completed["duration_ms"], int)
         self.assertIsInstance(completed["first_delta_ms"], int)
         self.assertGreater(footer["baseline_units"], 0)
+        self.assertEqual((footer["total_tokens"], footer["classifier_tokens"],
+                          footer["measured_total_tokens"], footer["session_measured_tokens"]),
+                         (55, 22, 77, 77))
         log_text = json.dumps(records)
         for private in ("PRIVATE_PROMPT_MARKER", "PRIVATE_DELTA", "PRIVATE_COMMAND", "PRIVATE_PATH",
                         "PRIVATE_RESPONSE", "private-turn-id", "same-thread"):
@@ -439,6 +506,7 @@ class AdaptiveTests(unittest.TestCase):
             json.loads(line)
         with self.assertRaises(ValueError):
             controls("[router effort=invalid]\nhello")
+
 
 
 if __name__ == "__main__":

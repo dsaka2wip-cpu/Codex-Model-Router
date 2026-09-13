@@ -32,15 +32,13 @@ CREDIT_RATES = {"gpt-5.6-luna": (5.0, 0.5, 30.0), "gpt-5.6-sol": (100.0, 10.0, 5
 # No fixed public effort multiplier exists. Only the Astra/Ultra counterfactual reasoning size uses this heuristic.
 EFFORT_REASONING_RATIO = {"none": 0.20, "minimal": 0.30, "low": 0.60, "medium": 0.75,
                           "high": 0.90, "xhigh": 0.95, "max": 1.00, "ultra": 1.00}
-AVERAGE_MESSAGE_CREDITS = {"gpt-5.6-luna": 1.0, "gpt-5.6-terra": 5.0,
-                           "gpt-5.6-sol": 11.0, "gpt-6-astra": 16.0}
 EFFORT_RANK = {name: rank for rank, name in enumerate(
     ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))}
 MODEL_ORDER = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
 TASK_TYPES = {"chat", "lookup", "research", "code_edit", "debugging",
               "design", "review", "ops", "mixed", "unknown"}
 AUDIT_SCHEMA_VERSION = 2
-POLICY_VERSION = "2026-09-12.1"
+POLICY_VERSION = "2026-09-12.4"
 
 
 def policy_fingerprint(config):
@@ -238,14 +236,16 @@ class AdaptivePolicy:
             elif key in ("count", "code") and type(value) is int:
                 record[key] = value
             elif key in ("turns", "luna", "terra", "sol", "astra", "input_tokens", "cached_tokens",
-                          "output_tokens", "reasoning_tokens", "total_tokens", "saved_percent",
+                          "output_tokens", "reasoning_tokens", "total_tokens", "classifier_tokens",
+                          "measured_total_tokens", "session_measured_tokens", "measured_turns", "saved_percent",
                           "duration_ms", "first_delta_ms", "context_chars", "source_read_ms",
-                          "planned_subagents") and type(value) is int:
+                          "planned_subagents", "recent_turns_fetched") and type(value) is int:
                 record[key] = value
             elif key in ("actual_units", "baseline_units") and type(value) in (int, float) \
                     and value >= 0 and isfinite(value):
                 record[key] = round(float(value), 6)
-            elif key in ("explicit_model", "explicit_effort") and type(value) is bool:
+            elif key in ("explicit_model", "explicit_effort", "has_recent_context",
+                         "has_task_summary", "has_current_request") and type(value) is bool:
                 record[key] = value
             elif key == "task_type" and value in TASK_TYPES:
                 record[key] = value
@@ -256,7 +256,7 @@ class AdaptivePolicy:
                 record[key] = value
             elif key == "context_mode" and value in ("fork", "read", "sidecar"):
                 record[key] = value
-            elif key == "source_context" and value in ("read", "summary", "current"):
+            elif key == "source_context" and value in ("recent", "read", "summary", "current"):
                 record[key] = value
             elif key == "error_kind" and value in ("invalid_params", "not_found", "busy", "permission",
                                                      "unsupported", "other"):
@@ -287,7 +287,8 @@ class AdaptivePolicy:
                 "active_turn": None, "usage_total": None, "last_footer": None,
                 "escalate_next": False,
                 "stats": {"turns": 0, "models": {"Luna": 0, "Terra": 0, "Sol": 0, "Astra": 0},
-                          "actual_units": 0.0, "baseline_units": 0.0},
+                          "actual_units": 0.0, "baseline_units": 0.0,
+                          "measured_tokens": 0, "measured_turns": 0},
             }
         self.threads.move_to_end(thread_id)
         return self.threads[thread_id]
@@ -386,6 +387,7 @@ class AdaptivePolicy:
                     return message
                 fallback = choose_route(prose, state["previous"])
                 decision = None
+                classifier_record = None
                 needs_classifier = (settings.get("tier") is None and self.classifier is not None
                                     and any(settings[axis] == "auto" and not fallback["explicit_" + axis]
                                             for axis in ("model", "effort")))
@@ -400,6 +402,9 @@ class AdaptivePolicy:
                             self.lock.acquire()
                         route, tier = route_for_selection(decision["model"], decision["effort"])
                         usage = decision.get("usage") or {}
+                        classifier_record = {"model": config["classifier"]["model"],
+                                             "effort": config["classifier"]["effort"],
+                                             "usage": decision.get("usage"), "failed": False}
                         self.audit("classifier", thread_id, model=decision["model"], effort=decision["effort"],
                                    count=len(decision.get("subagents", [])),
                                    task_type=decision.get("task_type", "unknown"),
@@ -407,6 +412,10 @@ class AdaptivePolicy:
                                    source_context=decision.get("source_context"),
                                    source_read_ms=decision.get("source_read_ms"),
                                    context_chars=decision.get("context_chars"),
+                                   recent_turns_fetched=decision.get("recent_turns_fetched"),
+                                   has_recent_context=decision.get("has_recent_context"),
+                                   has_task_summary=decision.get("has_task_summary"),
+                                   has_current_request=decision.get("has_current_request"),
                                    duration_ms=decision.get("duration_ms"),
                                    input_tokens=usage.get("inputTokens"),
                                    cached_tokens=usage.get("cachedInputTokens"),
@@ -415,6 +424,10 @@ class AdaptivePolicy:
                                    total_tokens=usage.get("totalTokens"))
                     except Exception as error:
                         decision = None
+                        failed_usage = getattr(error, "usage", None)
+                        classifier_record = {"model": config["classifier"]["model"],
+                                             "effort": config["classifier"]["effort"],
+                                             "usage": failed_usage, "failed": True}
                         failure_kind = getattr(error, "failure_kind", None)
                         if failure_kind is None:
                             failure_kind = "timeout" if isinstance(error, TimeoutError) else "internal"
@@ -491,9 +504,7 @@ class AdaptivePolicy:
                                          explicit_effort=explicit_effort,
                                          planned_subagents=len(decision.get("subagents", [])) if decision else 0,
                                          restore=restore,
-                                          classifier=(decision and {"model": config["classifier"]["model"],
-                                                                   "effort": config["classifier"]["effort"],
-                                                                   "usage": decision.get("usage")}),
+                                          classifier=classifier_record,
                                           consume_escalation=state["escalate_next"],
                                           new_controls={k: v for k, v in control.items() if k != "tier"})
                 # Commit policy state only after the backend accepts turn/start.
@@ -539,36 +550,39 @@ class AdaptivePolicy:
         if classifier:
             classifier_usage = classifier.get("usage")
             values = ([classifier_usage.get(k) for k in
-                       ("inputTokens", "cachedInputTokens", "outputTokens")]
+                       ("inputTokens", "cachedInputTokens", "outputTokens", "totalTokens")]
                       if isinstance(classifier_usage, dict) else [])
-            if len(values) == 3 and all(type(x) is int and x >= 0 for x in values):
-                input_tokens, cached, output = values
-                rate_in, rate_cached, rate_out = CREDIT_RATES[classifier["model"]]
-                classifier_units = (max(0, input_tokens - cached) * rate_in
-                                    + cached * rate_cached + output * rate_out) / 1_000_000
-            else:
-                classifier_units = (AVERAGE_MESSAGE_CREDITS[classifier["model"]]
-                                    * EFFORT_REASONING_RATIO.get(classifier["effort"], 1.0))
-        if isinstance(usage, dict):
-            values = [usage.get(k) for k in ("inputTokens", "cachedInputTokens", "outputTokens",
-                                               "reasoningOutputTokens")]
-            if all(type(x) is int and x >= 0 for x in values):
-                input_tokens, cached, output, reasoning = values
-                write = usage.get("cacheWriteInputTokens", 0)
-                write = write if type(write) is int and write > 0 else 0
-                uncached = max(0, input_tokens - cached - write)
-                rate_in, rate_cached, rate_out = CREDIT_RATES.get(model, CREDIT_RATES["gpt-6-astra"])
-                actual = ((uncached * rate_in + cached * rate_cached + write * rate_in * 1.25
-                           + output * rate_out) / 1_000_000 + classifier_units)
-                ratio = EFFORT_REASONING_RATIO.get(effort, 1.0)
-                baseline_output = max(0, output - reasoning) + reasoning / ratio
-                astra_in, astra_cached, astra_out = CREDIT_RATES["gpt-6-astra"]
-                baseline = (uncached * astra_in + cached * astra_cached + write * astra_in * 1.25
-                            + baseline_output * astra_out) / 1_000_000
-                if baseline > 0:
-                    return actual, baseline
+            if len(values) != 4 or not all(type(x) is int and x >= 0 for x in values):
+                return None
+            input_tokens, cached, output, _total = values
+            rates = CREDIT_RATES.get(classifier["model"])
+            if rates is None:
+                return None
+            rate_in, rate_cached, rate_out = rates
+            classifier_units = (max(0, input_tokens - cached) * rate_in
+                                + cached * rate_cached + output * rate_out) / 1_000_000
+        if not isinstance(usage, dict):
+            return None
+        values = [usage.get(k) for k in ("inputTokens", "cachedInputTokens", "outputTokens",
+                                         "reasoningOutputTokens", "totalTokens")]
+        if not all(type(x) is int and x >= 0 for x in values):
+            return None
+        input_tokens, cached, output, reasoning, _total = values
+        write = usage.get("cacheWriteInputTokens", 0)
+        write = write if type(write) is int and write > 0 else 0
+        uncached = max(0, input_tokens - cached - write)
+        rates = CREDIT_RATES.get(model)
+        if rates is None:
+            return None
+        rate_in, rate_cached, rate_out = rates
+        actual = ((uncached * rate_in + cached * rate_cached + write * rate_in * 1.25
+                   + output * rate_out) / 1_000_000 + classifier_units)
         ratio = EFFORT_REASONING_RATIO.get(effort, 1.0)
-        return AVERAGE_MESSAGE_CREDITS.get(model, 16.0) * ratio + classifier_units, 16.0
+        baseline_output = max(0, output - reasoning) + reasoning / ratio
+        astra_in, astra_cached, astra_out = CREDIT_RATES["gpt-6-astra"]
+        baseline = (uncached * astra_in + cached * astra_cached + write * astra_in * 1.25
+                    + baseline_output * astra_out) / 1_000_000
+        return (actual, baseline) if baseline > 0 else None
 
     def _footer_messages(self, message, thread_id, turn_id, item):
         turn = self.turns.get(turn_id)
@@ -576,30 +590,59 @@ class AdaptivePolicy:
             return None
         state = self._thread(thread_id)
         usage = turn.get("usage")
-        actual_units, baseline_units = self._estimate_units(turn)
+        estimate = self._estimate_units(turn)
+        actual_units, baseline_units = estimate or (None, None)
         stats = state["stats"]
         label = MODEL_LABELS.get(turn["model"], turn["model"])
         stats["turns"] += 1
         if label in stats["models"]:
             stats["models"][label] += 1
-        stats["actual_units"] += actual_units
-        stats["baseline_units"] += baseline_units
-        saved = 100 * (1 - stats["actual_units"] / stats["baseline_units"])
+        if estimate:
+            stats["actual_units"] += actual_units
+            stats["baseline_units"] += baseline_units
+        saved = (100 * (1 - stats["actual_units"] / stats["baseline_units"])
+                 if stats["baseline_units"] > 0 else None)
+        main_tokens = usage.get("totalTokens") if isinstance(usage, dict) else None
+        main_tokens = main_tokens if type(main_tokens) is int and main_tokens >= 0 else None
+        classifier_usage = ((turn.get("classifier") or {}).get("usage")
+                            if isinstance(turn.get("classifier"), dict) else None)
+        classifier_tokens = (classifier_usage.get("totalTokens")
+                             if isinstance(classifier_usage, dict) else None)
+        classifier_tokens = (classifier_tokens if type(classifier_tokens) is int
+                             and classifier_tokens >= 0 else None)
+        if turn.get("classifier") is None:
+            classifier_tokens = 0
+        measured_total = (main_tokens + classifier_tokens
+                          if main_tokens is not None and classifier_tokens is not None else None)
+        if measured_total is not None:
+            stats["measured_tokens"] += measured_total
+            stats["measured_turns"] += 1
+            measured_line = (f'이번 턴 관측 {measured_total:,} tokens '
+                             f'(작업 {main_tokens:,} + 판별 {classifier_tokens:,})')
+        else:
+            measured_line = "이번 턴 관측 사용량 미수신"
         current = f'{turn["tier"]}: {label} / {turn["effort"].capitalize()}'
         previous = state["last_footer"] or "없음"
         counts = stats["models"]
         classifier = turn.get("classifier")
         classifier_label = None
-        if not classifier:
+        if classifier is None:
             classifier_label = "로컬/수동"
+        elif classifier.get("failed"):
+            classifier_label = (f'{MODEL_LABELS.get(classifier["model"], classifier["model"])} / '
+                                f'{classifier["effort"].capitalize()} 실패→로컬')
         elif (classifier["model"], classifier["effort"]) != ("gpt-5.6-sol", "medium"):
             classifier_label = (f'{MODEL_LABELS.get(classifier["model"], classifier["model"])} / '
                                 f'{classifier["effort"].capitalize()}')
         classifier_prefix = f' · 판별: {classifier_label}' if classifier_label else ""
+        savings = (f'Astra/Ultra 기준 비용 절감 추정 {saved:.0f}%'
+                   if saved is not None else 'Astra/Ultra 기준 비용 절감 추정 미산출')
         footer = (f'Router{classifier_prefix} · 이번 턴: {current} · 직전 턴: {previous}\n'
+                  f'{measured_line}\n'
                   f'세션 {stats["turns"]}턴 · Luna {counts["Luna"]} / Terra {counts["Terra"]} / '
                   f'Sol {counts["Sol"]} / '
-                  f'Astra {counts["Astra"]} · 사용량 절감 추정 {saved:.0f}%')
+                  f'Astra {counts["Astra"]} · 관측 누적 {stats["measured_tokens"]:,} tokens '
+                  f'({stats["measured_turns"]}/{stats["turns"]}턴) · {savings}')
         usage = usage if isinstance(usage, dict) else {}
         self.audit("footer", thread_id, fingerprint=turn.get("policy_fingerprint"),
                    tier=turn["tier"] if turn["tier"] in TIERS else None,
@@ -608,7 +651,10 @@ class AdaptivePolicy:
                    luna=counts["Luna"], terra=counts["Terra"], sol=counts["Sol"], astra=counts["Astra"],
                    input_tokens=usage.get("inputTokens"), cached_tokens=usage.get("cachedInputTokens"),
                    output_tokens=usage.get("outputTokens"), reasoning_tokens=usage.get("reasoningOutputTokens"),
-                   total_tokens=usage.get("totalTokens"), saved_percent=round(saved),
+                   total_tokens=usage.get("totalTokens"),
+                   saved_percent=round(saved) if saved is not None else None,
+                   classifier_tokens=classifier_tokens, measured_total_tokens=measured_total,
+                   session_measured_tokens=stats["measured_tokens"], measured_turns=stats["measured_turns"],
                    actual_units=actual_units, baseline_units=baseline_units,
                    usage_source=turn.get("usage_source", "equal_turn"))
         suffix = "\n\n---\n" + footer

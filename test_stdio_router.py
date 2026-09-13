@@ -136,7 +136,8 @@ class StdioRouterTests(unittest.TestCase):
             {"type": "agentMessage", "phase": "final_answer", "text": f"answer-{i}-" + "y" * 2500},
         ]} for i in range(8)]
         summary = "active goal and constraints"
-        context = InternalClassifier._context({"turns": turns}, summary)
+        context, context_meta = InternalClassifier._context({"turns": turns}, summary)
+        self.assertEqual(context_meta, {"has_recent_context": True, "has_task_summary": True})
         self.assertIn("[Persistent task state]\n" + summary, context)
         self.assertNotIn("request-4-", context)
         self.assertIn("answer-7-", context)
@@ -148,22 +149,77 @@ class StdioRouterTests(unittest.TestCase):
         timeouts = []
         classifier._call = lambda _method, _params, timeout=None: (
             timeouts.append(timeout), (_ for _ in ()).throw(TimeoutError()))[1]
-        thread, context, mode, _duration = classifier._read_source("main", "Active state")
+        thread, context, mode, _duration, _meta = classifier._read_source("main", "Active state")
         self.assertEqual((thread, context, mode),
                          ({"turns": []}, "[Persistent task state]\nActive state", "summary"))
-        self.assertEqual(timeouts, [5])
+        thread, context, mode, _duration, _meta = classifier._read_source("main", "")
+        self.assertEqual((thread, context, mode), ({"turns": []}, "", "current"))
+        self.assertEqual(timeouts, [5, 5])
+
+    def test_source_read_uses_recent_paginated_turns(self):
+        classifier = InternalClassifier(io.BytesIO())
+        calls = []
+        newest = {"id": "new", "items": [{"type": "userMessage", "content": [
+            {"type": "text", "text": "newest"}]}]}
+        older = {"id": "old", "items": [{"type": "userMessage", "content": [
+            {"type": "text", "text": "older"}]}]}
+        classifier._call = lambda method, params, timeout=None: (
+            calls.append((method, params, timeout)) or {"data": [newest, older]})
+        thread, context, mode, _duration, _meta = classifier._read_source("main", "Active state")
+        self.assertEqual(thread["turns"], [older, newest])
+        self.assertEqual(mode, "recent")
+        self.assertIn("older", context)
+        self.assertIn("newest", context)
+        self.assertEqual(calls, [("thread/turns/list", {
+            "threadId": "main", "limit": RECENT_TURNS,
+            "sortDirection": "desc", "itemsView": "full"}, 5)])
 
     def test_unreadable_new_thread_uses_current_request_classifier(self):
         classifier = InternalClassifier(io.BytesIO())
         classifier._call = lambda *_args, **_kwargs: (
             _ for _ in ()).throw(RpcFailure({"code": -32600, "message": "request failed"}))
-        thread, context, mode, _duration = classifier._read_source("new-thread", "stale summary")
+        thread, context, mode, _duration, _meta = classifier._read_source("new-thread", "stale summary")
         self.assertEqual((thread, context, mode), ({"turns": []}, "", "current"))
+
+    def test_unsupported_turn_pagination_uses_legacy_read(self):
+        classifier = InternalClassifier(io.BytesIO())
+        calls = []
+        def call(method, _params, timeout=None):
+            calls.append((method, timeout))
+            if method == "thread/turns/list":
+                raise RpcFailure({"code": -32601, "message": "method not found"})
+            return {"thread": {"turns": []}}
+        classifier._call = call
+        thread, _context, mode, _duration, _meta = classifier._read_source("thread", "")
+        self.assertEqual((thread, mode), ({"turns": []}, "read"))
+        self.assertEqual(calls, [("thread/turns/list", 5), ("thread/read", 5)])
+
+    def test_legacy_read_timeout_keeps_summary_or_current_classifier(self):
+        classifier = InternalClassifier(io.BytesIO())
+        def call(method, _params, timeout=None):
+            if method == "thread/turns/list":
+                raise RpcFailure({"code": -32601, "message": "method not found"})
+            raise TimeoutError("legacy read")
+        classifier._call = call
+        self.assertEqual(classifier._read_source("thread", "Active")[:3],
+                         ({"turns": []}, "[Persistent task state]\nActive", "summary"))
+        self.assertEqual(classifier._read_source("thread", "")[:3],
+                         ({"turns": []}, "", "current"))
+
+    def test_legacy_invalid_thread_uses_current_request(self):
+        classifier = InternalClassifier(io.BytesIO())
+        def call(method, _params, timeout=None):
+            if method == "thread/turns/list":
+                raise RpcFailure({"code": -32601, "message": "method not found"})
+            raise RpcFailure({"code": -32600, "message": "unknown thread"})
+        classifier._call = call
+        self.assertEqual(classifier._read_source("thread", "stale")[:3],
+                         ({"turns": []}, "", "current"))
 
     def test_unrelated_source_rpc_failure_is_not_hidden(self):
         classifier = InternalClassifier(io.BytesIO())
         classifier._call = lambda *_args, **_kwargs: (
-            _ for _ in ()).throw(RpcFailure({"code": -32601, "message": "method not found"}))
+            _ for _ in ()).throw(RpcFailure({"code": -32000, "message": "server error"}))
         with self.assertRaises(RpcFailure):
             classifier._read_source("thread", "")
 
@@ -185,7 +241,8 @@ class StdioRouterTests(unittest.TestCase):
 
         sidecars = [Sidecar(), Sidecar()]
         classifier = InternalClassifier(io.BytesIO(), sidecar_factory=lambda: sidecars.pop(0))
-        classifier._read_source = lambda *_args: ({"turns": []}, "", "read", 0)
+        classifier._read_source = lambda *_args: ({"turns": []}, "", "read", 0, {
+            "has_recent_context": False, "has_task_summary": False})
         classifier._start_hidden = lambda *_args: (_ for _ in ()).throw(TimeoutError())
         first = sidecars[0]
         with self.assertRaises(ClassifierFailure) as raised:
@@ -237,23 +294,32 @@ class StdioRouterTests(unittest.TestCase):
 
         sidecars = [Sidecar(), Sidecar()]
         classifier = InternalClassifier(io.BytesIO(), sidecar_factory=lambda: sidecars.pop(0))
-        classifier._call = lambda method, _params, timeout=None: ({"thread": {
-            "id": "main-thread", "cwd": os.getcwd(), "turns": [{"items": [
-                {"type": "userMessage", "content": [{"type": "text", "text": "Prior request"}]},
-                {"type": "agentMessage", "phase": "final_answer", "text": "Prior answer"},
-            ]}]}} if method == "thread/read" else (_ for _ in ()).throw(AssertionError(method)))
+        classifier._call = lambda method, _params, timeout=None: ({"data": [{"items": [
+            {"type": "userMessage", "content": [{"type": "text", "text": f"Prior request {i}"}]},
+            {"type": "agentMessage", "phase": "final_answer", "text": f"Prior answer {i}"},
+        ]} for i in (3, 2, 1)]} if method == "thread/turns/list"
+            else (_ for _ in ()).throw(AssertionError(method)))
         catalog = {
             "gpt-5.6-luna": {"efforts": ["low", "high"]},
             "gpt-5.6-sol": {"efforts": ["medium"]},
         }
+        classifier.summaries["main-thread"] = "Active task summary"
         first = sidecars[0]
         result = classifier.classify("main-thread", "Current request",
                                      {"model": "gpt-5.6-sol", "effort": "medium"}, catalog, [])
         self.assertEqual((result["model"], result["effort"], result["task_type"], result["context_mode"],
-                          result["usage"]["inputTokens"]),
-                         ("gpt-5.6-luna", "high", "lookup", "sidecar", 900))
+                          result["usage"]["inputTokens"], result["recent_turns_fetched"],
+                          result["has_recent_context"], result["has_task_summary"],
+                          result["has_current_request"]),
+                         ("gpt-5.6-luna", "high", "lookup", "sidecar", 900, 3, True, True, True))
         turn = next(params for method, params, _ in first.calls if method == "turn/start")
-        self.assertIn("Current request", turn["input"][0]["text"])
+        classifier_request = turn["input"][0]["text"]
+        self.assertIn("[Persistent task state]\nActive task summary", classifier_request)
+        self.assertIn("[Recent turns]\nUSER: Prior request 1", classifier_request)
+        for i in (1, 2, 3):
+            self.assertIn(f"USER: Prior request {i}", classifier_request)
+            self.assertIn(f"ASSISTANT: Prior answer {i}", classifier_request)
+        self.assertIn("<user_request>\nCurrent request\n</user_request>", classifier_request)
         first.process.returncode = 1
         replacement = classifier._get_sidecar()
         self.assertTrue(first.closed)

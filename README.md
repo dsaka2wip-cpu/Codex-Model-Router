@@ -12,7 +12,7 @@
   <img alt="Codex Desktop" src="https://img.shields.io/badge/Codex_Desktop-native_GUI-111827">
   <img alt="Classifier" src="https://img.shields.io/badge/classifier-Sol_medium-2563EB">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-22C55E">
-  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-72_passed-7C3AED">
+  <img alt="Tests" src="https://img.shields.io/badge/offline_tests-78_passed-7C3AED">
 </p>
 
 ---
@@ -131,10 +131,13 @@ Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거�
 
 ```text
 Router · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
-세션 17턴 · Luna 7 / Terra 4 / Sol 4 / Astra 2 · 사용량 절감 추정 51%
+이번 턴 관측 8,420 tokens (작업 7,180 + 판별 1,240)
+세션 17턴 · Luna 7 / Terra 4 / Sol 4 / Astra 2 · 관측 누적 142,380 tokens (17/17턴) · Astra/Ultra 기준 비용 절감 추정 51%
 ```
 
-집계는 현재 Router 프로세스의 해당 thread 기준입니다. 답변과 판별의 실제 token usage가 있으면 공개 credit rate로 계산하고, 없으면 평균값 기반 추정치를 사용합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
+집계는 현재 Router 프로세스의 해당 thread 기준입니다. `이번 턴 관측`과 `관측 누적`은 App Server가 보낸 본작업 token usage와 판별기가 반환한 token usage를 합친 값입니다. 괄호의 `17/17턴`은 작업과 판별 사용량을 모두 수신한 턴 수입니다. App Server 문서가 이 이벤트를 결제 원장이나 모든 하위 작업의 완전한 합계로 보장하지 않으므로 `실측 청구량`이라고 부르지 않습니다. 작업 또는 판별 사용량이 하나라도 없으면 임의의 0이나 평균값을 만들지 않고 `관측 사용량 미수신`으로 표시합니다.
+
+`Astra/Ultra 기준 비용 절감 추정`은 사용량이 완전하게 관측된 턴만 공개 credit rate로 환산해 같은 작업을 Astra/Ultra가 수행했다고 가정한 반사실 비교입니다. 관측이 하나도 완전하지 않으면 `미산출`로 표시합니다. 실행하지 않은 기준 모델의 정확한 토큰 수는 알 수 없으므로 이 백분율은 계속 추정치로 명시합니다. 푸터는 로컬 GUI 방향에만 추가하므로 서버의 대화 원문은 바꾸지 않으며 앱을 다시 로드하면 사라질 수 있습니다.
 
 정상 자동 경로의 판별기는 고정 Sol/medium이므로 푸터에서는 생략합니다. 로컬 fallback·수동 경로 또는 판별 모델을 바꾼 경우만 `판별:` 정보를 표시합니다.
 
@@ -164,9 +167,10 @@ Router · 이번 턴: FAST: Luna / High · 직전 턴: NORMAL: Terra / Medium
 - 로그 스키마 v2는 정책 지문, 해시된 thread/turn, 작업 유형, 선택된 model/effort, 판별·턴 지연, token usage, 승인·파일 변경 발생, 완료 상태, fallback·승급과 턴별 절감 단위만 기록합니다.
 - 프로토콜에서 GUI 기본값과 사용자가 피커에서 방금 고른 값을 구별할 수 없으므로, `explicit_model`과 `explicit_effort`는 첫 줄 제어문이나 기존 명시적 라우팅 문법으로 확인된 경우만 기록합니다.
 - 판별기가 계획한 하위 작업 수는 기록하지만 실제 생성된 하위 작업의 effort는 현재 App Server 이벤트에서 신뢰성 있게 관찰할 수 없어 추정하지 않습니다.
-- 판별 입력은 현재 요청 원문, 최근 3턴 최대 4,000자, 메모리 내 작업 상태 최대 1,200자로 제한합니다.
-- 부모 thread가 실행 중이라 읽기가 지연되면 5초 뒤 메모리 내 작업 상태로 판별을 계속합니다. 해당 상태가 아직 없으면 로컬 규칙으로 안전하게 처리합니다.
-- 새 thread처럼 `thread/read`가 `-32600`을 반환하면 과거 요약을 섞지 않고 현재 입력만 Sol/medium 판별기에 전달합니다. 다른 RPC 오류는 숨기지 않습니다.
+- 정상 판별 입력은 `현재 요청 원문 + thread/turns/list로 가져온 최근 3턴(최대 4,000자) + 메모리 내 작업 상태(최대 1,200자)`입니다. 재시작 직후 첫 턴처럼 작업 상태가 아직 없을 때만 최대 600자의 작업 앵커를 대신 사용합니다. 지원되는 현재 App Server에서는 전체 thread history를 불러오지 않습니다.
+- 비민감 audit에는 병합 여부를 확인할 수 있도록 `recent_turns_fetched`, `has_recent_context`, `has_task_summary`, `has_current_request`만 남기며 문맥 본문은 기록하지 않습니다.
+- 최근 턴 읽기가 5초를 넘기면 메모리 내 작업 상태로 판별을 계속합니다. 재시작 직후처럼 저장된 상태도 없으면 현재 요청만 Sol/medium 판별기에 보내며, 문맥 읽기 지연만으로 로컬 규칙에 떨어지지 않습니다.
+- 새 thread처럼 `thread/turns/list`가 `-32600`을 반환하면 과거 요약을 섞지 않고 현재 입력만 Sol/medium 판별기에 전달합니다. 구형 App Server가 이 메서드를 지원하지 않을 때만 기존 `thread/read`를 사용하며, 다른 RPC 오류는 숨기지 않습니다.
 - 작업 상태 요약은 같은 Sol/medium 판별 응답에서 함께 만들며 디스크에 저장하지 않습니다. 앱을 다시 시작하면 최근 문맥에서 다시 구성합니다.
 - 판별은 동일한 `codex.exe`와 ChatGPT 인증을 공유하는 경량 App Server sidecar에서 실행하며, 프로젝트 지침·스킬·플러그인·MCP·실행 도구를 비활성화합니다.
 - 서버 stderr는 GUI로 전달할 뿐 별도 수집하지 않습니다.
@@ -179,7 +183,7 @@ Windows 11, Codex CLI `0.154.0-alpha.6.2`, Codex Desktop `26.908.4834.0`에서 �
 
 | 검증 | 결과 |
 |---|---|
-| 오프라인 단위·프로토콜 검사 | ✅ 72개 통과 |
+| 오프라인 단위·프로토콜 검사 | ✅ 78개 통과 |
 | 판별 시간·토큰·fallback 유형의 비민감 계측 | ✅ 정책·프로토콜 검사 통과 |
 | 숨은 ephemeral fork·판별 이벤트 차단·동시 GUI 이벤트 | ✅ 모의 App Server에서 확인 |
 | Luna/high·Terra/max·Astra/ultra 독립 선택 | ✅ 정책 검사 통과 |
@@ -187,6 +191,7 @@ Windows 11, Codex CLI `0.154.0-alpha.6.2`, Codex Desktop `26.908.4834.0`에서 �
 | 실제 GUI → Router → App Server 프로세스 경로 | ✅ 확인 |
 | 실제 GUI 경량 판별 sidecar | ✅ 32,447 → 7,207 tokens (약 78% 감소) |
 | GUI source read 복구 | ✅ 정상 read, 5초 지연 fallback, 새 thread의 현재 입력 판별 확인 |
+| 실제 GUI 최근 3턴 + task summary + 현재 질문 병합 | ✅ 같은 PID의 두 번째 턴 audit에서 세 입력 구역 확인 |
 | 기존 ChatGPT Pro 인증 및 기존 대화 유지 | ✅ 확인 |
 | GUI 첫 NORMAL 턴 → Sol/medium | ✅ 요청 route와 서버 settings 일치 |
 | 23개 후보를 제시한 실제 GUI 판별 1건 → Sol/high | ✅ 요청 route와 서버 settings 일치 |
@@ -198,6 +203,10 @@ Windows 11, Codex CLI `0.154.0-alpha.6.2`, Codex Desktop `26.908.4834.0`에서 �
 | 자동 턴 완료 후 Sol/medium 유휴 프리셋 복구 | ✅ 정책·stdio RPC 및 실제 GUI 재시작 확인 |
 | Router 종료·App Server 재연결·기존 thread 유지 | ✅ 실제 백엔드 10/10 통과 |
 | 실제 GUI 원복 전체 흐름 | ✅ Native 우회·기존 thread 유지·Adaptive 재복귀 확인 |
+
+### Remote Control 제한
+
+휴대폰 Remote Control에서 시작한 턴은 로컬 GUI의 `turn/start`를 거치지 않고 완료 결과만 App Server로 동기화됩니다. 따라서 현재 stdio Router는 Remote Control 턴을 사전에 분류하거나 model/effort를 바꾸지 못하며, Router 푸터와 Router가 담당하는 Sol/medium 복원도 적용되지 않습니다. PC의 Codex Desktop GUI에서 시작한 턴에는 정상 적용됩니다. 공식 사전 훅이나 Remote 입력 중계 지점이 제공되기 전까지 이 경로를 지원한다고 표시하지 않습니다.
 
 ## 라우팅 평가
 
