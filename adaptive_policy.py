@@ -621,6 +621,19 @@ class AdaptivePolicy:
                              f'(작업 {main_tokens:,} + 판별 {classifier_tokens:,})')
         else:
             measured_line = "이번 턴 관측 사용량 미수신"
+        breakdown_line = ""
+        usage_parts = [usage] + ([classifier_usage] if turn.get("classifier") is not None else [])
+        if measured_total is not None and all(isinstance(part, dict) for part in usage_parts):
+            parts = [tuple(part.get(k) for k in
+                           ("inputTokens", "cachedInputTokens", "outputTokens", "totalTokens"))
+                     for part in usage_parts]
+            if all(all(type(value) is int and value >= 0 for value in part)
+                   and part[1] <= part[0] and part[3] == part[0] + part[2] for part in parts):
+                cached_input = sum(part[1] for part in parts)
+                uncached_input = sum(part[0] - part[1] for part in parts)
+                output = sum(part[2] for part in parts)
+                breakdown_line = (f'\n캐시 입력 {cached_input:,} · '
+                                  f'미캐시 입력 {uncached_input:,} · 출력 {output:,}')
         current = f'{turn["tier"]}: {label} / {turn["effort"].capitalize()}'
         previous = state["last_footer"] or "없음"
         counts = stats["models"]
@@ -638,7 +651,7 @@ class AdaptivePolicy:
         savings = (f'Astra/Ultra 기준 비용 절감 추정 {saved:.0f}%'
                    if saved is not None else 'Astra/Ultra 기준 비용 절감 추정 미산출')
         footer = (f'Router{classifier_prefix} · 이번 턴: {current} · 직전 턴: {previous}\n'
-                  f'{measured_line}\n'
+                  f'{measured_line}{breakdown_line}\n'
                   f'세션 {stats["turns"]}턴 · Luna {counts["Luna"]} / Terra {counts["Terra"]} / '
                   f'Sol {counts["Sol"]} / '
                   f'Astra {counts["Astra"]} · 관측 누적 {stats["measured_tokens"]:,} tokens '

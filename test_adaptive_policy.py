@@ -156,6 +156,7 @@ class AdaptiveTests(unittest.TestCase):
         footer = rows[1]["params"]["item"]["text"]
         self.assertIn("판별: Sol / Medium 실패→로컬", footer)
         self.assertIn("이번 턴 관측 사용량 미수신", footer)
+        self.assertNotIn("캐시 입력", footer)
         self.assertIn("Astra/Ultra 기준 비용 절감 추정 미산출", footer)
         self.assertNotIn("판별 0", footer)
         audit = "\n".join(path.read_text(encoding="utf-8") for path in self.policy.audit_dir.glob("*.jsonl"))
@@ -190,6 +191,7 @@ class AdaptiveTests(unittest.TestCase):
         footer = rows[1]["params"]["item"]["text"]
         self.assertIn("판별: gpt-5.5 / Medium 실패→로컬", footer)
         self.assertIn("이번 턴 관측 18 tokens (작업 12 + 판별 6)", footer)
+        self.assertIn("캐시 입력 0 · 미캐시 입력 15 · 출력 3", footer)
         self.assertIn("Astra/Ultra 기준 비용 절감 추정 미산출", footer)
 
     def test_failed_turn_escalates_once_without_overriding_explicit_choice(self):
@@ -332,6 +334,8 @@ class AdaptiveTests(unittest.TestCase):
         self.assertNotIn("판별:", rows[0]["params"]["delta"])
         self.assertIn("세션 1턴 · Luna 1 / Terra 0 / Sol 0 / Astra 0", rows[1]["params"]["item"]["text"])
         self.assertIn("이번 턴 관측 100 tokens (작업 100 + 판별 0)", rows[1]["params"]["item"]["text"])
+        self.assertIn("캐시 입력 20 · 미캐시 입력 60 · 출력 20",
+                      rows[1]["params"]["item"]["text"])
         self.assertIn("관측 누적 100 tokens (1/1턴) · Astra/Ultra 기준 비용 절감 추정 98%",
                       rows[1]["params"]["item"]["text"])
         self.assertIsNone(self.policy.on_server(completed))
@@ -357,6 +361,7 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIn("직전 턴: FAST: Luna / Low", footer)
         self.assertIn("세션 2턴 · Luna 1 / Terra 0 / Sol 1 / Astra 0", footer)
         self.assertIn("이번 턴 관측 70 tokens (작업 70 + 판별 0)", footer)
+        self.assertIn("캐시 입력 10 · 미캐시 입력 50 · 출력 10", footer)
         self.assertIn("관측 누적 170 tokens (2/2턴)", footer)
 
     def test_savings_require_complete_priced_usage(self):
