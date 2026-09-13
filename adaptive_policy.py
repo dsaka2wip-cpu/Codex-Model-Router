@@ -632,8 +632,14 @@ class AdaptivePolicy:
                 cached_input = sum(part[1] for part in parts)
                 uncached_input = sum(part[0] - part[1] for part in parts)
                 output = sum(part[2] for part in parts)
-                breakdown_line = (f'\n캐시 입력 {cached_input:,} · '
-                                  f'미캐시 입력 {uncached_input:,} · 출력 {output:,}')
+                fresh_tokens = uncached_input + output
+                cache_share = (f' (입력의 {cached_input / (cached_input + uncached_input):.2%})'
+                               if cached_input + uncached_input and cached_input else '')
+                measured_line = (f'이번 턴 신규 {fresh_tokens:,} tokens '
+                                 f'(입력 {uncached_input:,} + 출력 {output:,})')
+                breakdown_line = (f'\n캐시 재사용 {cached_input:,} tokens{cache_share} · '
+                                  f'총 관측 {measured_total:,} tokens '
+                                  f'(작업 {main_tokens:,} + 판별 {classifier_tokens:,})')
         current = f'{turn["tier"]}: {label} / {turn["effort"].capitalize()}'
         previous = state["last_footer"] or "없음"
         counts = stats["models"]
