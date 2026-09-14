@@ -77,29 +77,27 @@ flowchart LR
 
 - Windows 11
 - 설치 및 로그인된 Codex Desktop
-- Python 3
-- 저장소 경로에서 PowerShell 실행
+- Python 3.8 이상(Codex 번들 Python도 자동 탐색)
 
 ### 1. 내려받기
 
 ```powershell
 git clone https://github.com/dsaka2wip-cpu/Codex-Model-Router.git
-Set-Location .\Codex-Model-Router
 ```
 
-### 2. 빌드 및 사전 검사
+GitHub의 **Code → Download ZIP**으로 내려받아 압축을 풀어도 됩니다.
+
+### 2. 실행
+
+Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd`**를 더블클릭합니다. 첫 실행에는 기본 설정 생성, Python 탐색, 네이티브 실행기 빌드와 사전 검사를 자동으로 수행합니다. 이후 Codex가 Router를 통해 실행됩니다.
+
+Python 3.8 이상을 찾을 수 없으면 설치 후 같은 파일을 다시 실행하세요. Windows PowerShell 실행 정책 예외는 해당 시작 프로세스에만 적용되며 사용자·시스템의 영구 정책을 변경하지 않습니다. 조직의 그룹 정책은 이 옵션보다 우선합니다.
+
+고급 사용자는 빌드와 사전 검사만 따로 실행할 수 있습니다.
 
 ```powershell
-.\Build-NativeRouter.ps1
-.\Start-AdaptiveCodex.ps1 -CheckOnly
-```
-
-### 3. Codex 연결
-
-Codex를 완전히 종료한 뒤 **`Start Adaptive Codex.cmd` (Codex가 실행 중이면 완전히 종료될 때까지 기다렸다가 새 Router로 자동 실행)**를 더블클릭하거나 실행합니다.
-
-```powershell
-.\Start-AdaptiveCodex.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-NativeRouter.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AdaptiveCodex.ps1 -CheckOnly
 ```
 
 이미 실행 중인 Codex에는 중간 삽입할 수 없습니다. 실행기가 새 Codex 프로세스에만 `CODEX_CLI_PATH`를 전달하며 사용자·시스템 전역 환경변수는 바꾸지 않습니다.
@@ -111,7 +109,7 @@ Codex가 자동 업데이트되어 버전별 `WindowsApps` 및 내부 CLI 경로
 Codex를 완전히 종료한 뒤 **`Restore Codex.cmd`**를 더블클릭하거나 실행합니다.
 
 ```powershell
-.\Restore-Codex.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Restore-Codex.ps1
 ```
 
 원복은 Router를 거치지 않고 기존 Codex를 시작합니다. 앱, 설정, 로그인, 대화 데이터는 삭제하지 않습니다.
@@ -263,6 +261,7 @@ python .\router_report.py --all
 
 ```json
 {
+  "enabled": true,
   "model": "auto",
   "effort": "auto",
   "classifier": { "model": "gpt-5.6-sol", "effort": "medium" },

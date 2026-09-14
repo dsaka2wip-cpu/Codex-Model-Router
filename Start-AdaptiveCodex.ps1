@@ -8,6 +8,22 @@ param(
     [switch]$LoadFunctionsOnly
 )
 
+function Set-AdaptiveCodexProcessEnvironment {
+    param([Parameter(Mandatory)][Diagnostics.ProcessStartInfo]$StartInfo)
+
+    # cmd.exe can pass both Path and PATH. .NET Framework's first getter
+    # then throws after allocating a partially populated dictionary.
+    $clean = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $clean[$entry.Key] = $entry.Value }
+    try {
+        $environment = $StartInfo.get_EnvironmentVariables()
+    } catch {
+        if ($_.Exception.InnerException -isnot [ArgumentException]) { throw }
+        $environment = $StartInfo.get_EnvironmentVariables()
+    }
+    $environment.Clear()
+    foreach ($entry in $clean.GetEnumerator()) { $environment[$entry.Key] = $entry.Value }
+}
 function Test-AdaptiveCodexLauncher {
     param(
         [Parameter(Mandatory)][string]$Command,
@@ -20,10 +36,7 @@ function Test-AdaptiveCodexLauncher {
     $start.Arguments = $Arguments
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    $cleanEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($entry in $start.EnvironmentVariables.GetEnumerator()) { $cleanEnvironment[$entry.Key] = $entry.Value }
-    $start.EnvironmentVariables.Clear()
-    foreach ($entry in $cleanEnvironment.GetEnumerator()) { $start.EnvironmentVariables[$entry.Key] = $entry.Value }
+    Set-AdaptiveCodexProcessEnvironment -StartInfo $start
     try {
         $process = [Diagnostics.Process]::Start($start)
     } catch {
@@ -60,8 +73,39 @@ if ($LoadFunctionsOnly) { return }
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($PSScriptRoot)
+$statePath = Join-Path $root 'state'
+$configPath = Join-Path $statePath 'adaptive-config.json'
+$defaultConfigPath = Join-Path $root 'adaptive-config.default.json'
 $metadataPath = Join-Path $root 'state\native-runtime.json'
-if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Run Build-NativeRouter.ps1 first.' }
+
+New-Item -ItemType Directory -Path $statePath -Force | Out-Null
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $defaultConfigPath -PathType Leaf)) { throw "Default configuration is missing: $defaultConfigPath" }
+    Copy-Item -LiteralPath $defaultConfigPath -Destination $configPath
+    Write-Host 'Created the default adaptive routing configuration.'
+}
+
+$buildRequired = -not (Test-Path -LiteralPath $metadataPath -PathType Leaf)
+if (-not $buildRequired) {
+    try {
+        $savedRuntime = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+        $buildRequired = (-not [string]::Equals([IO.Path]::GetFullPath([string]$savedRuntime.root), $root, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-Path -LiteralPath ([string]$savedRuntime.launcher) -PathType Leaf) -or
+            -not (Test-Path -LiteralPath ([string]$savedRuntime.python) -PathType Leaf))
+        if (-not $buildRequired) {
+            $launcherSource = Get-Item -LiteralPath (Join-Path $root 'NativeRouterLauncher.cs')
+            $launcherBinary = Get-Item -LiteralPath ([string]$savedRuntime.launcher)
+            $buildRequired = $launcherSource.LastWriteTimeUtc -gt $launcherBinary.LastWriteTimeUtc
+        }
+    } catch {
+        $buildRequired = $true
+    }
+}
+if ($buildRequired) {
+    Write-Host 'Preparing Adaptive Codex for first use...'
+    & (Join-Path $root 'Build-NativeRouter.ps1')
+}
+
 $runtime = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
 if (-not [string]::Equals([IO.Path]::GetFullPath($runtime.root), $root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime metadata belongs to a different project path.' }
 $app = Resolve-CodexAppPath -Preferred ([string]$runtime.app_exe)
@@ -111,10 +155,7 @@ if ($running) {
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $app
 $start.UseShellExecute = $false
-$cleanEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
-foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $cleanEnvironment[$entry.Key] = $entry.Value }
-$start.EnvironmentVariables.Clear()
-foreach ($entry in $cleanEnvironment.GetEnumerator()) { $start.EnvironmentVariables[$entry.Key] = $entry.Value }
+Set-AdaptiveCodexProcessEnvironment -StartInfo $start
 if ($BypassRouter -and -not $savedBaseline) {
     $start.EnvironmentVariables.Remove('CODEX_CLI_PATH') | Out-Null
 } else {

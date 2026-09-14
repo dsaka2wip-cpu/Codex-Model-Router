@@ -1,3 +1,3 @@
 @echo off
-powershell.exe -NoProfile -File "%~dp0Restore-Codex.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Restore-Codex.ps1"
 if errorlevel 1 pause
